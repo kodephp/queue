@@ -1,0 +1,48 @@
+{
+    "name": "kode/queue",
+    "description": "一个现代化、高性能的 PHP 队列客户端，支持多种队列驱动",
+    "type": "library",
+    "version": "1.1.0",
+    "keywords": [
+        "queue",
+        "redis",
+        "beanstalkd",
+        "amqp",
+        "database",
+        "sync",
+        "kafka",
+        "php"
+    ],
+    "homepage": "https://github.com/kodephp/queue",
+    "license": "Apache-2.0",
+    "authors": [
+        {
+            "name": "KodePHP 团队",
+            "email": "382601296@qq.com",
+            "homepage": "https://kodephp.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.1",
+        "ext-json": "*",
+        "ext-pdo": "*"
+    },
+    "suggest": {
+        "predis/predis": "Redis 驱动所需",
+        "pda/pheanstalk": "Beanstalkd 驱动所需",
+        "php-amqplib/php-amqplib": "AMQP 驱动所需",
+        "ext-rdkafka": "Kafka 驱动所需"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kode\\Queue\\": "src/Kode/Queue/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test-coverage": "phpunit --coverage-html coverage"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

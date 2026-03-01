@@ -1,0 +1,31 @@
+# Dependencies
+/vendor/
+
+# IDE
+/.idea/
+/.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+/build/
+
+# Logs
+*.log
+
+# PHPUnit
+.phpunit.result.cache
+phpcs.xml.dist
+phpunit.xml.dist
+phpunit.xml
+.phpunit.cache
+command.log
+
+# IDE
+.trae/
+*/.cursor
+phpcs.xml
+
+composer.lock

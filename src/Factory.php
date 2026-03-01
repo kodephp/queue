@@ -6,6 +6,9 @@ use Kode\Queue\Driver\RedisDriver;
 use Kode\Queue\Driver\BeanstalkdDriver;
 use Kode\Queue\Driver\AmqpDriver;
 use Kode\Queue\Driver\KafkaDriver;
+use Kode\Queue\Driver\SyncDriver;
+use Kode\Queue\Driver\DatabaseDriver;
+use Kode\Queue\Driver\DriverInterface;
 
 class Factory {
     /**
@@ -14,7 +17,8 @@ class Factory {
      * @param array $config 配置
      * @return QueueInterface 队列实例
      */
-    public static function create(array $config = []): QueueInterface {
+    public static function create(array $config = []): QueueInterface 
+    {
         $config = self::mergeConfig($config);
         $defaultDriver = $config['default'] ?? 'redis';
         $connectionConfig = $config['connections'][$defaultDriver] ?? [];
@@ -29,12 +33,12 @@ class Factory {
      * @param array  $config 配置
      * @return QueueInterface 队列实例
      */
-    public static function createWithDriver(string $driver, array $config = []): QueueInterface {
+    public static function createWithDriver(string $driver, array $config = []): QueueInterface 
+    {
         $driverInstance = self::createDriver($driver, $config);
         $defaultQueue = $config['queue'] ?? $config['tube'] ?? 'default';
 
         return new class($driverInstance, $defaultQueue) extends AbstractQueue {
-            // 继承 AbstractQueue 的匿名类
         };
     }
 
@@ -43,9 +47,10 @@ class Factory {
      *
      * @param string $driver 驱动名称
      * @param array  $config 配置
-     * @return Driver\DriverInterface 驱动实例
+     * @return DriverInterface 驱动实例
      */
-    protected static function createDriver(string $driver, array $config = []): Driver\DriverInterface {
+    protected static function createDriver(string $driver, array $config = []): DriverInterface 
+    {
         switch (strtolower($driver)) {
             case 'redis':
                 return new RedisDriver($config);
@@ -54,9 +59,9 @@ class Factory {
             case 'amqp':
                 return new AmqpDriver($config);
             case 'sync':
-                return new Driver\SyncDriver($config);
+                return new SyncDriver($config);
             case 'database':
-                return new Driver\DatabaseDriver($config);
+                return new DatabaseDriver($config);
             case 'kafka':
                 return new KafkaDriver($config);
             default:
@@ -70,7 +75,8 @@ class Factory {
      * @param array $config 给定配置
      * @return array 合并后的配置
      */
-    protected static function mergeConfig(array $config): array {
+    protected static function mergeConfig(array $config): array 
+    {
         return array_merge([
             'default' => 'redis',
             'connections' => [

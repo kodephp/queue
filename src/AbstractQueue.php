@@ -58,6 +58,26 @@ abstract class AbstractQueue implements QueueInterface {
     }
 
     /**
+     * 管道操作符支持
+     *
+     * @param callable $callback 回调函数
+     * @return mixed
+     */
+    public function pipe(callable $callback) {
+        return $callback($this);
+    }
+
+    /**
+     * 管道操作符重载
+     *
+     * @param callable $callback 回调函数
+     * @return mixed
+     */
+    public function __invoke(callable $callback) {
+        return $this->pipe($callback);
+    }
+
+    /**
      * 通过中间件栈调度队列操作
      *
      * @param string $method 方法名
@@ -230,7 +250,6 @@ abstract class AbstractQueue implements QueueInterface {
         $key = 'global_' . $queue;
         if (!isset(self::$globalInstances[$key])) {
             self::$globalInstances[$key] = new static($this->driver, $queue);
-            // 复制中间件
             foreach ($this->middleware as $middleware) {
                 self::$globalInstances[$key]->addMiddleware($middleware);
             }
@@ -246,7 +265,6 @@ abstract class AbstractQueue implements QueueInterface {
      */
     public function local(string $queue = 'default'): QueueInterface {
         $instance = new static($this->driver, $queue);
-        // 复制中间件
         foreach ($this->middleware as $middleware) {
             $instance->addMiddleware($middleware);
         }

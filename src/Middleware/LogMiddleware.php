@@ -3,32 +3,14 @@
 namespace Kode\Queue\Middleware;
 
 class LogMiddleware implements MiddlewareInterface {
-    /**
-     * The logger callback.
-     *
-     * @var callable
-     */
     protected $logger;
 
-    /**
-     * Create a new log middleware instance.
-     *
-     * @param callable|null $logger
-     */
     public function __construct(callable $logger = null) {
         $this->logger = $logger ?? function (string $message) {
             echo "[" . date('Y-m-d H:i:s') . "] " . $message . PHP_EOL;
         };
     }
 
-    /**
-     * Handle a queue operation.
-     *
-     * @param callable $next
-     * @param string   $method
-     * @param array    $parameters
-     * @return mixed
-     */
     public function handle(callable $next, string $method, array $parameters) {
         $startTime = microtime(true);
         $logger = $this->logger;

@@ -1,8 +1,8 @@
 {
     "name": "kode/queue",
-    "description": "一个现代化、高性能的 PHP 队列客户端，支持多种队列驱动",
+    "description": "一个现代化、高性能的 PHP 队列客户端，支持多种队列驱动，专为 PHP 8.1+ 设计，完美支持 PHP 8.5 管道操作符新特性",
     "type": "library",
-    "version": "1.1.0",
+    "version": "1.3.0",
     "keywords": [
         "queue",
         "redis",
@@ -11,21 +11,34 @@
         "database",
         "sync",
         "kafka",
-        "php"
+        "php",
+        "php81",
+        "php85",
+        "pipeline",
+        "队列",
+        "消息队列"
     ],
     "homepage": "https://github.com/kodephp/queue",
     "license": "Apache-2.0",
     "authors": [
         {
-            "name": "KodePHP 团队",
+            "name": "KodePHP Team",
             "email": "382601296@qq.com",
             "homepage": "https://kodephp.com"
         }
     ],
+    "support": {
+        "issues": "https://github.com/kodephp/queue/issues",
+        "source": "https://github.com/kodephp/queue",
+        "docs": "https://github.com/kodephp/queue#readme"
+    },
     "require": {
         "php": ">=8.1",
         "ext-json": "*",
         "ext-pdo": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.6|^10.0"
     },
     "suggest": {
         "predis/predis": "Redis 驱动所需",
@@ -35,7 +48,12 @@
     },
     "autoload": {
         "psr-4": {
-            "Kode\\Queue\\": "src/Kode/Queue/"
+            "Kode\\Queue\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Kode\\Queue\\Tests\\": "tests/"
         }
     },
     "scripts": {
@@ -44,5 +62,7 @@
     },
     "config": {
         "sort-packages": true
-    }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
 }

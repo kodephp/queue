@@ -3,5 +3,4 @@
 namespace Kode\Queue\Exception;
 
 class TransactionException extends QueueException {
-    // Transaction exception class
 }

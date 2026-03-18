@@ -21,7 +21,6 @@
 - [API 参考](#api-参考)
 - [项目结构](#项目结构)
 - [测试](#测试)
-- [许可证](#许可证)
 
 ## 特性
 
@@ -722,7 +721,3 @@ composer test
 # 生成测试覆盖率报告
 composer test-coverage
 ```
-
-## 许可证
-
-[Apache-2.0](LICENSE)

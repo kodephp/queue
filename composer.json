@@ -2,7 +2,7 @@
     "name": "kode/queue",
     "description": "一个现代化、高性能的 PHP 队列客户端，支持多种队列驱动，专为 PHP 8.1+ 设计，完美支持 PHP 8.5 管道操作符新特性",
     "type": "library",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "keywords": [
         "queue",
         "redis",

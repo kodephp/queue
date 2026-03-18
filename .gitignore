@@ -1,32 +1,47 @@
 # Dependencies
 /vendor/
+composer.lock
 
 # IDE
 /.idea/
 /.vscode/
+/.trae/
+*.swp
+*.swo
+*~
 
 # OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Build
 /build/
+/dist/
 
 # Logs
 *.log
+logs/
 
 # PHPUnit
 .phpunit.result.cache
-phpcs.xml.dist
-phpunit.xml.dist
+.phpunit.cache/
 phpunit.xml
-.phpunit.cache
-command.log
-/runtime
-
-# IDE
-.trae/
-*/.cursor
+phpunit.xml.dist
 phpcs.xml
+phpcs.xml.dist
+coverage/
+.clover
 
-composer.lock
+# Runtime
+/runtime/
+/tmp/
+
+# Test files
+test*.php
+*-test.php

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         cacheDirectory=".phpunit.cache"
+         executionOrder="depends,defects"
+         beStrictAboutOutputDuringTests="true"
+         failOnRisky="true"
+         failOnWarning="true">
+    <testsuites>
+        <testsuite name="kode/queue">
+            <directory>tests</directory>
+        </testsuite>
+    </testsuites>
+
+    <source>
+        <include>
+            <directory>src</directory>
+        </include>
+        <exclude>
+            <!-- 需要真实后端才能跑的驱动，交给集成测试环境 -->
+            <directory>src/Driver/Redis</directory>
+            <file>src/Driver/AmqpDriver.php</file>
+            <file>src/Driver/BeanstalkdDriver.php</file>
+            <file>src/Driver/KafkaDriver.php</file>
+            <file>src/Driver/RedisDriver.php</file>
+        </exclude>
+    </source>
+</phpunit>

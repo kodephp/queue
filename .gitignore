@@ -28,13 +28,12 @@ Desktop.ini
 *.log
 logs/
 
-# PHPUnit
+# PHPUnit / 代码风格
+# 仓库提供 *.dist 基线文件，开发者可用去掉 .dist 的同名文件在本地覆盖
 .phpunit.result.cache
 .phpunit.cache/
 phpunit.xml
-phpunit.xml.dist
 phpcs.xml
-phpcs.xml.dist
 coverage/
 .clover
 
@@ -42,6 +41,12 @@ coverage/
 /runtime/
 /tmp/
 
-# Test files
+# 本地临时脚本（正式测试放 tests/，命名为 XxxTest.php 不受影响）
 test*.php
 *-test.php
+
+# WorkBuddy 工作区数据
+/.workbuddy/
+
+# 变更日志仅本地维护，不随仓库发布
+/CHANGELOG.md

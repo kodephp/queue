@@ -1,224 +1,420 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Kode\Queue\Driver;
 
-use Kode\Queue\Exception\DriverException;
+use Kode\Queue\Enum\Capability;
+use Kode\Queue\Enum\DriverType;
+use Kode\Queue\Message\Job;
+use Kode\Queue\Message\ReservedJob;
+use Kode\Queue\Support\QueueStats;
+use Override;
+use PhpAmqpLib\Channel\AMQPChannel;
+use PhpAmqpLib\Connection\AbstractConnection;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Message\AMQPMessage;
-use PhpAmqpLib\Channel\AMQPChannel;
+use PhpAmqpLib\Wire\AMQPTable;
 
 /**
- * AMQP 队列驱动
- * 
- * 使用 AMQP 协议（如 RabbitMQ）作为队列存储后端。
- * 提供可靠的消息传递、持久化和消息确认机制。
+ * AMQP / RabbitMQ 驱动。
+ *
+ * 三个 v1 未解决的问题在这里补齐：
+ *
+ * 1. **延迟投递**。AMQP 协议本身没有延迟消息。v2 用「TTL 队列 + 死信交换机」
+ *    实现：延迟任务先投进一个带 `x-message-ttl` 的中转队列，到期后由 RabbitMQ
+ *    自动死信回主队列。若集群装了 `rabbitmq_delayed_message_exchange` 插件，
+ *    则自动改用插件的 `x-delay` 头，开销更低。
+ * 2. **真正的 ack**。v1 用 `basic_get(no_ack = true)`，消息一取出就从 broker 消失，
+ *    Worker 崩溃即丢消息。v2 改为手动确认，配合 `basic_nack` 重回队列。
+ * 3. **优先级**。声明队列时带上 `x-max-priority`，并把内部 0-100 的优先级
+ *    线性映射到 AMQP 的 0-10。
  */
-class AmqpDriver implements DriverInterface {
-    /**
-     * AMQP 连接实例
-     *
-     * @var AMQPStreamConnection
-     */
-    protected AMQPStreamConnection $connection;
+class AmqpDriver extends AbstractDriver
+{
+    private ?AbstractConnection $connection = null;
+
+    private ?AMQPChannel $channel = null;
+
+    /** @var array<string, true> 本进程已声明过的队列，避免重复 declare */
+    private array $declared = [];
+
+    #[Override]
+    public function type(): DriverType
+    {
+        return DriverType::Amqp;
+    }
+
+    #[Override]
+    public function supports(Capability $capability): bool
+    {
+        // 延迟能力由本驱动通过 DLX/插件补齐，不在枚举的「原生能力」清单里
+        return $capability === Capability::Delay || parent::supports($capability);
+    }
+
+    // ------------------------------------------------------------------
+    // 生产
+    // ------------------------------------------------------------------
+
+    #[Override]
+    public function push(Job $job): string
+    {
+        $job = $this->normalize($job);
+
+        $this->guard('push', function () use ($job): void {
+            $delay = $job->delaySeconds();
+            $channel = $this->channel();
+            $this->declareQueue($job->queue);
+
+            $properties = [
+                'delivery_mode' => $this->config->bool('durable', true)
+                    ? AMQPMessage::DELIVERY_MODE_PERSISTENT
+                    : AMQPMessage::DELIVERY_MODE_NON_PERSISTENT,
+                'content_type' => 'application/json',
+                'message_id' => $job->id,
+                'timestamp' => $job->createdAt !== 0 ? $job->createdAt : time(),
+                'priority' => $job->priority->toAmqp(),
+                'application_headers' => new AMQPTable(array_filter([
+                    'x-queue' => $job->queue,
+                    'x-attempts' => $job->attempts,
+                    'x-trace-id' => $job->traceId(),
+                ], static fn (mixed $v): bool => $v !== null)),
+            ];
+
+            [$exchange, $routingKey] = $this->route($job->queue, $delay, $properties);
+
+            $channel->basic_publish(
+                new AMQPMessage($this->encode($job), $properties),
+                $exchange,
+                $routingKey,
+            );
+        }, ['job' => $job->id, 'queue' => $job->queue]);
+
+        return $job->id;
+    }
+
+    #[Override]
+    public function pushBatch(iterable $jobs): array
+    {
+        $ids = [];
+
+        $this->guard('pushBatch', function () use ($jobs, &$ids): void {
+            $channel = $this->channel();
+
+            foreach ($jobs as $job) {
+                $ids[] = $this->push($job);
+            }
+
+            // 一次性 flush，省掉逐条的网络往返
+            $channel->publish_batch();
+        });
+
+        return $ids;
+    }
+
+    // ------------------------------------------------------------------
+    // 消费
+    // ------------------------------------------------------------------
+
+    #[Override]
+    public function pop(string $queue, float $timeout = 0.0): ?ReservedJob
+    {
+        return $this->guard('pop', function () use ($queue, $timeout): ?ReservedJob {
+            $deadline = microtime(true) + max(0.0, $timeout);
+            $this->declareQueue($queue);
+
+            do {
+                $message = $this->channel()->basic_get($queue, false);
+
+                if ($message instanceof AMQPMessage) {
+                    $payload = $message->getBody();
+                    $job = $this->decode($payload)->incrementAttempts();
+
+                    return ReservedJob::of(
+                        job: $job,
+                        receipt: (string) $message->getDeliveryTag(),
+                        rawPayload: $payload,
+                        meta: ['message' => $message, 'redelivered' => $message->isRedelivered()],
+                    );
+                }
+
+                $remaining = $deadline - microtime(true);
+                if ($remaining <= 0) {
+                    break;
+                }
+
+                usleep((int) (min(0.05, $remaining) * 1_000_000));
+            } while (microtime(true) < $deadline);
+
+            return null;
+        }, ['queue' => $queue]);
+    }
+
+    #[Override]
+    public function ack(ReservedJob $job): bool
+    {
+        return $this->guard('ack', function () use ($job): bool {
+            $this->channel()->basic_ack($this->tagOf($job));
+
+            return true;
+        }, ['job' => $job->job->id]);
+    }
+
+    #[Override]
+    public function release(ReservedJob $job, int $delay = 0): bool
+    {
+        return $this->guard('release', function () use ($job, $delay): bool {
+            $channel = $this->channel();
+
+            if ($delay <= 0) {
+                // 无延迟：直接 nack 回原队列，由 broker 保证不丢
+                $channel->basic_nack($this->tagOf($job), false, true);
+
+                return true;
+            }
+
+            // 有延迟：先确认原消息，再以延迟消息重新投递
+            $channel->basic_ack($this->tagOf($job));
+            $this->push($job->job->delayedBy($delay));
+
+            return true;
+        }, ['job' => $job->job->id, 'delay' => $delay]);
+    }
 
     /**
-     * AMQP 通道实例
-     *
-     * @var AMQPChannel
+     * 失败即 `basic_nack(requeue = false)`：
+     * 队列若配置了 `x-dead-letter-exchange`，消息会自动进入死信队列。
      */
-    protected AMQPChannel $channel;
+    #[Override]
+    public function fail(ReservedJob $job, \Throwable $reason): bool
+    {
+        return $this->guard('fail', function () use ($job): bool {
+            $this->channel()->basic_nack($this->tagOf($job), false, false);
 
-    /**
-     * 默认队列名称
-     *
-     * @var string
-     */
-    protected string $queue;
+            return true;
+        }, ['job' => $job->job->id]);
+    }
 
-    /**
-     * 创建 AMQP 驱动实例
-     *
-     * @param array $config 配置数组
-     *                       - host: RabbitMQ 服务器地址
-     *                       - port: RabbitMQ 端口
-     *                       - username: 用户名
-     *                       - password: 密码
-     *                       - vhost: 虚拟主机
-     *                       - queue: 默认队列名称
-     * @throws DriverException AMQP 连接失败时抛出
-     */
-    public function __construct(array $config = []) {
+    // ------------------------------------------------------------------
+    // 管理
+    // ------------------------------------------------------------------
+
+    #[Override]
+    public function size(string $queue): int
+    {
+        return $this->guard('size', function () use ($queue): int {
+            $this->declareQueue($queue);
+            // passive = true：只查询不创建
+            $result = $this->channel()->queue_declare($queue, true);
+
+            return \is_array($result) ? (int) ($result[1] ?? 0) : 0;
+        }, ['queue' => $queue]);
+    }
+
+    #[Override]
+    public function clear(string $queue): int
+    {
+        return $this->guard('clear', function () use ($queue): int {
+            $size = $this->size($queue);
+            $this->channel()->queue_purge($queue);
+
+            return $size;
+        }, ['queue' => $queue]);
+    }
+
+    #[Override]
+    public function stats(string $queue): QueueStats
+    {
+        return $this->guard('stats', function () use ($queue): QueueStats {
+            $this->declareQueue($queue);
+            $result = $this->channel()->queue_declare($queue, true);
+            $delayed = 0;
+
+            foreach (array_keys($this->declared) as $name) {
+                if (str_starts_with($name, $queue . '.delay.')) {
+                    $sub = $this->channel()->queue_declare($name, true);
+                    $delayed += \is_array($sub) ? (int) ($sub[1] ?? 0) : 0;
+                }
+            }
+
+            return QueueStats::of(
+                queue: $queue,
+                driver: $this->type()->value,
+                ready: \is_array($result) ? (int) ($result[1] ?? 0) : 0,
+                delayed: $delayed,
+                extra: [
+                    'consumers' => \is_array($result) ? (int) ($result[2] ?? 0) : 0,
+                    'exchange' => $this->config->string('exchange', ''),
+                ],
+            );
+        }, ['queue' => $queue]);
+    }
+
+    // ------------------------------------------------------------------
+    // 连接
+    // ------------------------------------------------------------------
+
+    #[Override]
+    public function isConnected(): bool
+    {
+        return $this->connection?->isConnected() ?? false;
+    }
+
+    #[Override]
+    public function reconnect(): void
+    {
+        $this->close();
+        $this->channel();
+    }
+
+    #[Override]
+    public function close(): void
+    {
         try {
-            $this->connection = new AMQPStreamConnection(
-                $config['host'] ?? '127.0.0.1',
-                $config['port'] ?? 5672,
-                $config['username'] ?? 'guest',
-                $config['password'] ?? 'guest',
-                $config['vhost'] ?? '/'
+            $this->channel?->close();
+            $this->connection?->close();
+        } catch (\Throwable) {
+            // 连接已断开，无需处理
+        }
+
+        $this->channel = null;
+        $this->connection = null;
+        $this->declared = [];
+        $this->connected = false;
+    }
+
+    public function channel(): AMQPChannel
+    {
+        if ($this->channel instanceof AMQPChannel && $this->connection?->isConnected() === true) {
+            return $this->channel;
+        }
+
+        $injected = $this->config->object('connection');
+
+        $this->connection = $injected instanceof AbstractConnection
+            ? $injected
+            : new AMQPStreamConnection(
+                host: $this->config->string('host', '127.0.0.1') ?? '127.0.0.1',
+                port: $this->config->int('port', 5672),
+                user: $this->config->string('username', 'guest') ?? 'guest',
+                password: $this->config->secret('password', 'guest') ?? 'guest',
+                vhost: $this->config->string('vhost', '/') ?? '/',
+                connection_timeout: $this->config->float('timeout', 3.0),
+                read_write_timeout: $this->config->float('read_write_timeout', 130.0),
+                keepalive: $this->config->bool('keepalive', true),
+                heartbeat: $this->config->int('heartbeat', 30),
             );
 
-            $this->channel = $this->connection->channel();
-            $this->queue = $config['queue'] ?? 'default';
-        } catch (\Exception $e) {
-            throw new DriverException("AMQP connection failed: " . $e->getMessage(), 0, $e);
-        }
-    }
+        $this->connected = true;
+        $channel = $this->connection->channel();
 
-    /**
-     * 推送任务到队列
-     * 
-     * 使用持久化消息确保消息不会丢失
-     *
-     * @param string $payload 任务负载（JSON格式）
-     * @param string $queue 队列名称
-     * @param array  $options 额外选项
-     * @return string 任务ID
-     */
-    public function push(string $payload, string $queue, array $options = []): string {
-        $jobId = uniqid('', true);
-        $data = json_decode($payload, true);
-        $data['id'] = $jobId;
-        $payload = json_encode($data);
-
-        $queueName = $queue ?: $this->queue;
-        // 声明持久化队列
-        $this->channel->queue_declare($queueName, false, true, false, false);
-
-        // 创建持久化消息
-        $message = new AMQPMessage($payload, ['delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT]);
-        $this->channel->basic_publish($message, '', $queueName);
-
-        return $jobId;
-    }
-
-    /**
-     * 延迟推送任务到队列
-     *
-     * @param int    $delay 延迟时间（秒）
-     * @param string $payload 任务负载（JSON格式）
-     * @param string $queue 队列名称
-     * @param array  $options 额外选项
-     * @return string 任务ID
-     */
-    public function later(int $delay, string $payload, string $queue, array $options = []): string {
-        $jobId = uniqid('', true);
-        $data = json_decode($payload, true);
-        $data['id'] = $jobId;
-        $data['available_at'] = time() + $delay;
-        $payload = json_encode($data);
-
-        return $this->push($payload, $queue, $options);
-    }
-
-    /**
-     * 从队列中取出下一个任务
-     * 
-     * 使用消息确认机制确保消息不会丢失
-     *
-     * @param string $queue 队列名称
-     * @return mixed 任务数据数组，无任务时返回null
-     */
-    public function pop(string $queue) {
-        $queueName = $queue ?: $this->queue;
-        $this->channel->queue_declare($queueName, false, true, false, false);
-
-        // 获取消息（非阻塞）
-        $message = $this->channel->basic_get($queueName);
-
-        if (!$message) {
-            return null;
+        // QoS：一次只预取配置的条数，避免单个 Worker 把整个队列抓走
+        if (($prefetch = $this->config->int('prefetch', 1)) > 0) {
+            $channel->basic_qos(0, $prefetch, false);
         }
 
-        // 确认消息
-        $this->channel->basic_ack($message->getDeliveryTag());
-
-        return json_decode($message->body, true);
+        return $this->channel = $channel;
     }
 
-    /**
-     * 获取队列大小
-     * 
-     * AMQP 不直接支持获取队列大小，返回 0
-     *
-     * @param string $queue 队列名称
-     * @return int 队列大小
-     */
-    public function size(string $queue): int {
-        return 0;
-    }
+    // ------------------------------------------------------------------
+    // 内部实现
+    // ------------------------------------------------------------------
 
     /**
-     * 从队列中删除任务
+     * 计算投递目标：普通消息直投主队列，延迟消息走插件或 TTL 中转队列。
      *
-     * @param string $jobId 任务ID
-     * @param string $queue 队列名称
-     * @return bool 是否删除成功
+     * @param  array<string, mixed> $properties 会被就地补上 x-delay 头
+     * @return array{0: string, 1: string}      [exchange, routingKey]
      */
-    public function delete(string $jobId, string $queue): bool {
-        return true;
-    }
+    private function route(string $queue, int $delay, array &$properties): array
+    {
+        $exchange = $this->config->string('exchange', '') ?? '';
 
-    /**
-     * 将任务释放回队列
-     *
-     * @param int    $delay 延迟时间（秒）
-     * @param string $jobId 任务ID
-     * @param string $queue 队列名称
-     * @return bool 是否释放成功
-     */
-    public function release(int $delay, string $jobId, string $queue): bool {
-        return true;
-    }
-
-    /**
-     * 获取队列统计信息
-     *
-     * @param string $queue 队列名称
-     * @return array 统计信息数组
-     */
-    public function stats(string $queue): array {
-        return [
-            'queue' => $queue,
-            'size' => $this->size($queue),
-            'timestamp' => time(),
-        ];
-    }
-
-    /**
-     * 开始事务（AMQP 不支持事务，方法为空）
-     *
-     * @return void
-     */
-    public function beginTransaction(): void {
-    }
-
-    /**
-     * 提交事务（AMQP 不支持事务，方法为空）
-     *
-     * @return void
-     */
-    public function commit(): void {
-    }
-
-    /**
-     * 回滚事务（AMQP 不支持事务，方法为空）
-     *
-     * @return void
-     */
-    public function rollback(): void {
-    }
-
-    /**
-     * 关闭 AMQP 连接
-     *
-     * @return void
-     */
-    public function close(): void {
-        if ($this->channel) {
-            $this->channel->close();
+        if ($delay <= 0) {
+            return [$exchange, $queue];
         }
-        if ($this->connection) {
-            $this->connection->close();
+
+        if ($this->config->bool('delayed_plugin')) {
+            $headers = $properties['application_headers'];
+            \assert($headers instanceof AMQPTable);
+            $headers->set('x-delay', $delay * 1000);
+
+            return [$this->config->string('delayed_exchange', 'kode.delayed') ?? 'kode.delayed', $queue];
         }
+
+        return ['', $this->declareDelayQueue($queue, $delay)];
+    }
+
+    /**
+     * 声明主队列（含优先级上限与可选死信交换机）。
+     */
+    private function declareQueue(string $queue): void
+    {
+        if (isset($this->declared[$queue])) {
+            return;
+        }
+
+        $arguments = [];
+
+        if (($maxPriority = $this->config->int('max_priority', 10)) > 0) {
+            $arguments['x-max-priority'] = ['I', min(255, $maxPriority)];
+        }
+
+        if (($dlx = $this->config->string('dead_letter_exchange')) !== null && $dlx !== '') {
+            $arguments['x-dead-letter-exchange'] = ['S', $dlx];
+        }
+
+        $this->channel()->queue_declare(
+            queue: $queue,
+            passive: false,
+            durable: $this->config->bool('durable', true),
+            exclusive: false,
+            auto_delete: false,
+            nowait: false,
+            arguments: new AMQPTable($arguments),
+        );
+
+        $this->declared[$queue] = true;
+    }
+
+    /**
+     * 声明「延迟中转队列」：消息在此静置 TTL 秒后死信回主队列。
+     *
+     * 延迟时长按 10 秒粒度归桶，避免为每个不同延迟都建一条队列。
+     */
+    private function declareDelayQueue(string $queue, int $delay): string
+    {
+        $bucket = max(1, (int) ceil($delay / 10) * 10);
+        $name = sprintf('%s.delay.%d', $queue, $bucket);
+
+        if (!isset($this->declared[$name])) {
+            $this->declareQueue($queue);
+            $this->channel()->queue_declare(
+                queue: $name,
+                passive: false,
+                durable: $this->config->bool('durable', true),
+                exclusive: false,
+                auto_delete: false,
+                nowait: false,
+                arguments: new AMQPTable([
+                    'x-message-ttl' => ['I', $bucket * 1000],
+                    'x-dead-letter-exchange' => ['S', $this->config->string('exchange', '') ?? ''],
+                    'x-dead-letter-routing-key' => ['S', $queue],
+                    // 中转队列长时间无消息即自动清理，防止桶数无限膨胀
+                    'x-expires' => ['I', ($bucket + 3600) * 1000],
+                ]),
+            );
+
+            $this->declared[$name] = true;
+        }
+
+        return $name;
+    }
+
+    private function tagOf(ReservedJob $job): int|string
+    {
+        $message = $job->meta['message'] ?? null;
+
+        return $message instanceof AMQPMessage ? $message->getDeliveryTag() : $job->receipt;
     }
 }

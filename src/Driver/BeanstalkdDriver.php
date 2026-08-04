@@ -1,195 +1,361 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Kode\Queue\Driver;
 
+use Kode\Queue\Enum\DriverType;
 use Kode\Queue\Exception\DriverException;
-use Pheanstalk\Pheanstalk;
-use Pheanstalk\Job;
+use Kode\Queue\Message\Job;
+use Kode\Queue\Message\ReservedJob;
+use Kode\Queue\Support\QueueStats;
+use Override;
 
 /**
- * Beanstalkd 队列驱动
- * 
- * 使用 Beanstalkd 作为队列存储后端，提供高性能、可靠的队列服务。
- * Beanstalkd 是一个轻量级的消息队列系统，专为异步任务处理设计。
+ * Beanstalkd 驱动。
+ *
+ * Beanstalkd 本身就把「预留 / 确认 / 掩埋」做进了协议，是最贴合队列语义的后端：
+ * `reserve` 拿到的任务在 TTR 内对其他 Worker 不可见，超时自动回到 ready 状态。
+ * 所以这里不需要像 Redis / 数据库那样自己实现可见性超时，直接把 TTR 交给它即可。
+ *
+ * v1 只用了 `put` / `reserve` 两个命令，`delete()` 甚至没有真正删除，
+ * 导致任务在 reserved 状态堆积直到 TTR 到期反复重投。v2 完整接上四态流转，
+ * 并把优先级语义翻译正确——Beanstalkd 是「数值越小越优先」，与内部约定相反。
+ *
+ * 同时兼容 Pheanstalk 4.x（字符串 tube）与 5.x（值对象 TubeName），
+ * 用户不必为了升级队列库去动 Pheanstalk 版本。
  */
-class BeanstalkdDriver implements DriverInterface {
-    /**
-     * Pheanstalk 客户端实例
-     *
-     * @var Pheanstalk
-     */
-    protected Pheanstalk $pheanstalk;
+class BeanstalkdDriver extends AbstractDriver
+{
+    private ?object $client = null;
 
-    /**
-     * 默认管道名称
-     *
-     * @var string
-     */
-    protected string $tube;
+    /** Pheanstalk 5 起 tube 名要包成值对象 */
+    private ?bool $usesValueObjects = null;
 
-    /**
-     * 创建 Beanstalkd 驱动实例
-     *
-     * @param array $config 配置数组
-     *                       - host: Beanstalkd 服务器地址
-     *                       - port: Beanstalkd 端口
-     *                       - timeout: 连接超时时间
-     *                       - tube: 默认管道名称
-     * @throws DriverException Beanstalkd 连接失败时抛出
-     */
-    public function __construct(array $config = []) {
-        try {
-            $this->pheanstalk = Pheanstalk::create(
-                $config['host'] ?? '127.0.0.1',
-                $config['port'] ?? 11300,
-                $config['timeout'] ?? 10
+    private ?string $watching = null;
+
+    #[Override]
+    public function type(): DriverType
+    {
+        return DriverType::Beanstalkd;
+    }
+
+    // ------------------------------------------------------------------
+    // 生产
+    // ------------------------------------------------------------------
+
+    #[Override]
+    public function push(Job $job): string
+    {
+        $job = $this->normalize($job);
+
+        $this->guard('push', function () use ($job): void {
+            $client = $this->client();
+            $client->useTube($this->tube($job->queue));
+
+            $client->put(
+                $this->encode($job),
+                $job->priority->toBeanstalkd(),
+                $job->delaySeconds(),
+                // TTR 即可见性超时：任务声明的 timeout 优先，退回连接级 retry_after
+                $job->timeout > 0 ? $job->timeout : $this->retryAfter(),
+            );
+        }, ['job' => $job->id, 'queue' => $job->queue]);
+
+        return $job->id;
+    }
+
+    // ------------------------------------------------------------------
+    // 消费
+    // ------------------------------------------------------------------
+
+    #[Override]
+    public function pop(string $queue, float $timeout = 0.0): ?ReservedJob
+    {
+        return $this->guard('pop', function () use ($queue, $timeout): ?ReservedJob {
+            $client = $this->client();
+            $this->watchOnly($queue);
+
+            // Beanstalkd 原生支持阻塞 reserve，不需要 PHP 侧轮询
+            $handle = $client->reserveWithTimeout(max(0, (int) ceil($timeout)));
+
+            if ($handle === null) {
+                return null;
+            }
+
+            $payload = (string) $handle->getData();
+            $job = $this->decode($payload)->incrementAttempts();
+
+            return ReservedJob::of(
+                job: $job,
+                receipt: $this->handleId($handle),
+                rawPayload: $payload,
+                meta: ['handle' => $handle, 'tube' => $queue],
+            );
+        }, ['queue' => $queue]);
+    }
+
+    #[Override]
+    public function peek(string $queue): ?Job
+    {
+        return $this->guard('peek', function () use ($queue): ?Job {
+            $client = $this->client();
+            $client->useTube($this->tube($queue));
+
+            try {
+                $handle = $client->peekReady();
+            } catch (\Throwable) {
+                // 空 tube 在部分版本里以异常形式返回
+                return null;
+            }
+
+            return $handle === null ? null : $this->decode((string) $handle->getData());
+        }, ['queue' => $queue]);
+    }
+
+    #[Override]
+    public function ack(ReservedJob $job): bool
+    {
+        return $this->guard('ack', function () use ($job): bool {
+            $this->client()->delete($this->handleOf($job));
+
+            return true;
+        }, ['job' => $job->job->id]);
+    }
+
+    #[Override]
+    public function release(ReservedJob $job, int $delay = 0): bool
+    {
+        return $this->guard('release', function () use ($job, $delay): bool {
+            $this->client()->release(
+                $this->handleOf($job),
+                $job->job->priority->toBeanstalkd(),
+                max(0, $delay),
             );
 
-            $this->tube = $config['tube'] ?? 'default';
-        } catch (\Exception $e) {
-            throw new DriverException("Beanstalkd connection failed: " . $e->getMessage(), 0, $e);
+            return true;
+        }, ['job' => $job->job->id, 'delay' => $delay]);
+    }
+
+    /**
+     * 失败即掩埋（bury）：任务留在 buried 状态，可用 `kick` 人工重放，
+     * 比直接删除更适合排障——这正是 Beanstalkd 相对其他后端的独特价值。
+     */
+    #[Override]
+    public function fail(ReservedJob $job, \Throwable $reason): bool
+    {
+        return $this->guard('fail', function () use ($job): bool {
+            $this->client()->bury($this->handleOf($job), $job->job->priority->toBeanstalkd());
+
+            return true;
+        }, ['job' => $job->job->id]);
+    }
+
+    /**
+     * 把掩埋的任务重新放回 ready 队列。
+     *
+     * @return int 实际被踢回的数量
+     */
+    public function kick(string $queue, int $max = 100): int
+    {
+        return $this->guard('kick', function () use ($queue, $max): int {
+            $client = $this->client();
+            $client->useTube($this->tube($queue));
+
+            return (int) $client->kick($max);
+        }, ['queue' => $queue]);
+    }
+
+    // ------------------------------------------------------------------
+    // 管理
+    // ------------------------------------------------------------------
+
+    #[Override]
+    public function size(string $queue): int
+    {
+        return $this->stats($queue)->ready;
+    }
+
+    #[Override]
+    public function clear(string $queue): int
+    {
+        // Beanstalkd 没有 flush 命令，逐个 reserve + delete 会误伤其他 Worker，
+        // 因此这里明确不做破坏性操作，返回 0 表示未清理。
+        return 0;
+    }
+
+    #[Override]
+    public function stats(string $queue): QueueStats
+    {
+        return $this->guard('stats', function () use ($queue): QueueStats {
+            try {
+                $stats = $this->client()->statsTube($this->tube($queue));
+            } catch (\Throwable) {
+                // tube 尚不存在时 Beanstalkd 会报 NOT_FOUND
+                return QueueStats::of(queue: $queue, driver: $this->type()->value);
+            }
+
+            $read = static fn (string $key): int => (int) ($stats[$key] ?? 0);
+
+            return QueueStats::of(
+                queue: $queue,
+                driver: $this->type()->value,
+                ready: $read('current-jobs-ready'),
+                delayed: $read('current-jobs-delayed'),
+                reserved: $read('current-jobs-reserved'),
+                failed: $read('current-jobs-buried'),
+                extra: [
+                    'buried' => $read('current-jobs-buried'),
+                    'total' => $read('total-jobs'),
+                    'watching' => $read('current-watching'),
+                ],
+            );
+        }, ['queue' => $queue]);
+    }
+
+    // ------------------------------------------------------------------
+    // 连接
+    // ------------------------------------------------------------------
+
+    #[Override]
+    public function isConnected(): bool
+    {
+        if ($this->client === null) {
+            return false;
+        }
+
+        try {
+            $this->client->stats();
+
+            return true;
+        } catch (\Throwable) {
+            return false;
         }
     }
 
-    /**
-     * 推送任务到队列
-     *
-     * @param string $payload 任务负载（JSON格式）
-     * @param string $queue 队列名称（管道）
-     * @param array  $options 额外选项
-     * @return string 任务ID
-     */
-    public function push(string $payload, string $queue, array $options = []): string {
-        $jobId = uniqid('', true);
-        $data = json_decode($payload, true);
-        $data['id'] = $jobId;
-        $payload = json_encode($data);
-
-        $this->pheanstalk->useTube($queue ?: $this->tube);
-        $this->pheanstalk->put($payload);
-
-        return $jobId;
-    }
-
-    /**
-     * 延迟推送任务到队列
-     *
-     * @param int    $delay 延迟时间（秒）
-     * @param string $payload 任务负载（JSON格式）
-     * @param string $queue 队列名称（管道）
-     * @param array  $options 额外选项
-     * @return string 任务ID
-     */
-    public function later(int $delay, string $payload, string $queue, array $options = []): string {
-        $jobId = uniqid('', true);
-        $data = json_decode($payload, true);
-        $data['id'] = $jobId;
-        $payload = json_encode($data);
-
-        $this->pheanstalk->useTube($queue ?: $this->tube);
-        $this->pheanstalk->put($payload, Pheanstalk::DEFAULT_PRIORITY, $delay);
-
-        return $jobId;
-    }
-
-    /**
-     * 从队列中取出下一个任务
-     *
-     * @param string $queue 队列名称（管道）
-     * @return mixed 任务数据数组，无任务时返回null
-     */
-    public function pop(string $queue) {
-        $this->pheanstalk->watch($queue ?: $this->tube);
-        $job = $this->pheanstalk->reserve(0);
-
-        if (!$job) {
-            return null;
+    #[Override]
+    public function close(): void
+    {
+        if ($this->client !== null && method_exists($this->client, 'disconnect')) {
+            try {
+                $this->client->disconnect();
+            } catch (\Throwable) {
+                // 忽略关闭异常
+            }
         }
 
-        // 删除已取出的任务
-        $this->pheanstalk->delete($job);
+        $this->client = null;
+        $this->watching = null;
+        $this->connected = false;
+    }
 
-        return json_decode($job->getData(), true);
+    public function client(): object
+    {
+        if ($this->client !== null) {
+            return $this->client;
+        }
+
+        $injected = $this->config->object('client_instance') ?? $this->config->object('connection');
+
+        if ($injected !== null) {
+            $this->connected = true;
+
+            return $this->client = $injected;
+        }
+
+        /** @var class-string $class */
+        $class = 'Pheanstalk\\Pheanstalk';
+
+        if (!class_exists($class)) {
+            throw DriverException::missingDependency(DriverType::Beanstalkd);
+        }
+
+        /** @var callable $factory */
+        $factory = [$class, 'create'];
+        $client = $factory(
+            $this->config->string('host', '127.0.0.1'),
+            $this->config->int('port', 11300),
+        );
+
+        $this->connected = true;
+
+        return $this->client = $client;
+    }
+
+    // ------------------------------------------------------------------
+    // 内部实现
+    // ------------------------------------------------------------------
+
+    /**
+     * 只监听目标 tube，避免 reserve 到别的队列的任务。
+     */
+    private function watchOnly(string $queue): void
+    {
+        if ($this->watching === $queue) {
+            return;
+        }
+
+        $client = $this->client();
+        $client->watch($this->tube($queue));
+
+        if ($this->watching !== null && $this->watching !== $queue) {
+            $client->ignore($this->tube($this->watching));
+        } elseif ($queue !== 'default') {
+            try {
+                $client->ignore($this->tube('default'));
+            } catch (\Throwable) {
+                // 不允许 ignore 最后一个 tube，忽略
+            }
+        }
+
+        $this->watching = $queue;
     }
 
     /**
-     * 获取队列大小
-     *
-     * @param string $queue 队列名称（管道）
-     * @return int 队列中的就绪任务数量
+     * Pheanstalk 4 收字符串，5 收 TubeName 值对象。
      */
-    public function size(string $queue): int {
-        $stats = $this->pheanstalk->statsTube($queue ?: $this->tube);
-        return (int)($stats['current-jobs-ready'] ?? 0);
+    private function tube(string $name): string|object
+    {
+        $this->usesValueObjects ??= class_exists('Pheanstalk\\Values\\TubeName');
+
+        if (!$this->usesValueObjects) {
+            return $name;
+        }
+
+        /** @var class-string $class */
+        $class = 'Pheanstalk\\Values\\TubeName';
+
+        return new $class($name);
     }
 
-    /**
-     * 从队列中删除任务
-     *
-     * @param string $jobId 任务ID
-     * @param string $queue 队列名称
-     * @return bool 是否删除成功
-     */
-    public function delete(string $jobId, string $queue): bool {
-        return true;
+    private function handleOf(ReservedJob $job): object
+    {
+        $handle = $job->meta['handle'] ?? null;
+
+        if (\is_object($handle)) {
+            return $handle;
+        }
+
+        // 跨进程确认时只剩下数字 ID，用值对象重建
+        foreach (['Pheanstalk\\Values\\JobId', 'Pheanstalk\\Job'] as $class) {
+            if (class_exists($class)) {
+                return new $class((int) $job->receipt);
+            }
+        }
+
+        throw DriverException::operationFailed(
+            'beanstalkd.handle',
+            new \RuntimeException('无法还原 Beanstalkd 任务句柄'),
+            ['job' => $job->job->id],
+        );
     }
 
-    /**
-     * 将任务释放回队列
-     *
-     * @param int    $delay 延迟时间（秒）
-     * @param string $jobId 任务ID
-     * @param string $queue 队列名称
-     * @return bool 是否释放成功
-     */
-    public function release(int $delay, string $jobId, string $queue): bool {
-        return true;
-    }
-
-    /**
-     * 获取队列统计信息
-     *
-     * @param string $queue 队列名称（管道）
-     * @return array 统计信息数组
-     */
-    public function stats(string $queue): array {
-        $stats = $this->pheanstalk->statsTube($queue ?: $this->tube);
-        return [
-            'queue' => $queue,
-            'size' => $stats['current-jobs-ready'] ?? 0,
-            'timestamp' => time(),
-        ];
-    }
-
-    /**
-     * 开始事务（Beanstalkd 不支持事务，方法为空）
-     *
-     * @return void
-     */
-    public function beginTransaction(): void {
-    }
-
-    /**
-     * 提交事务（Beanstalkd 不支持事务，方法为空）
-     *
-     * @return void
-     */
-    public function commit(): void {
-    }
-
-    /**
-     * 回滚事务（Beanstalkd 不支持事务，方法为空）
-     *
-     * @return void
-     */
-    public function rollback(): void {
-    }
-
-    /**
-     * 关闭 Beanstalkd 连接
-     *
-     * @return void
-     */
-    public function close(): void {
+    private function handleId(object $handle): int|string
+    {
+        return match (true) {
+            method_exists($handle, 'getId') => $handle->getId(),
+            property_exists($handle, 'id') => $handle->id,
+            default => (string) spl_object_id($handle),
+        };
     }
 }

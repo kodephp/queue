@@ -1,0 +1,35 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Kode\Queue\Console\Application;
+
+if (\PHP_SAPI !== 'cli') {
+    fwrite(\STDERR, 'kode-queue 只能在命令行下运行。' . \PHP_EOL);
+    exit(1);
+}
+
+// 依次尝试：作为依赖被安装 / 在自身仓库里开发
+$autoloads = [
+    __DIR__ . '/../../../autoload.php',
+    __DIR__ . '/../vendor/autoload.php',
+];
+
+$loaded = false;
+
+foreach ($autoloads as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+        $loaded = true;
+
+        break;
+    }
+}
+
+if (!$loaded) {
+    fwrite(\STDERR, '找不到 Composer autoload，请先运行 composer install。' . \PHP_EOL);
+    exit(1);
+}
+
+exit((new Application())->run($argv));

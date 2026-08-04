@@ -1,22 +1,25 @@
 {
     "name": "kode/queue",
-    "description": "一个现代化、高性能的 PHP 队列客户端，支持多种队列驱动，专为 PHP 8.1+ 设计，完美支持 PHP 8.5 管道操作符新特性",
+    "description": "现代化 PHP 8.3+ 队列组件：不可变消息对象、可见性超时与至少一次投递、内建 Worker 与死信存储，支持 Redis / 数据库 / Beanstalkd / AMQP / Kafka 等多种后端",
     "type": "library",
-    "version": "1.4.0",
+    "version": "2.0.0",
     "keywords": [
         "queue",
+        "job-queue",
+        "message-queue",
+        "worker",
         "redis",
         "beanstalkd",
         "amqp",
-        "database",
-        "sync",
+        "rabbitmq",
         "kafka",
-        "php",
-        "php81",
-        "php85",
-        "pipeline",
+        "database",
+        "dead-letter",
+        "php83",
+        "coroutine",
         "队列",
-        "消息队列"
+        "消息队列",
+        "延迟队列"
     ],
     "homepage": "https://github.com/kodephp/queue",
     "license": "Apache-2.0",
@@ -33,19 +36,35 @@
         "docs": "https://github.com/kodephp/queue#readme"
     },
     "require": {
-        "php": ">=8.1",
+        "php": "^8.3",
         "ext-json": "*",
-        "ext-pdo": "*"
+        "ext-mbstring": "*",
+        "psr/container": "^1.1 || ^2.0",
+        "psr/log": "^2.0 || ^3.0",
+        "psr/simple-cache": "^2.0 || ^3.0"
     },
     "require-dev": {
-        "phpunit/phpunit": "^9.6|^10.0"
+        "phpunit/phpunit": "^10.5 || ^11.0"
     },
     "suggest": {
-        "predis/predis": "Redis 驱动所需",
-        "pda/pheanstalk": "Beanstalkd 驱动所需",
-        "php-amqplib/php-amqplib": "AMQP 驱动所需",
-        "ext-rdkafka": "Kafka 驱动所需"
+        "ext-pdo": "DatabaseDriver / DatabaseFailedJobStore 所需",
+        "ext-redis": "RedisDriver 首选客户端（性能优于 Predis）",
+        "ext-rdkafka": "KafkaDriver 所需",
+        "ext-igbinary": "IgbinarySerializer：比 JSON 更小更快的二进制序列化",
+        "ext-pcntl": "Worker 优雅退出、任务超时强制中断所需",
+        "predis/predis": "RedisDriver 的纯 PHP 客户端（无 ext-redis 时使用）",
+        "pda/pheanstalk": "BeanstalkdDriver 所需",
+        "php-amqplib/php-amqplib": "AmqpDriver 所需",
+        "psr/event-dispatcher": "接入任意 PSR-14 事件派发器",
+        "kode/event": "自动接管队列事件派发（无需手动接线）",
+        "kode/context": "协程 / 请求级上下文透传，ContextMiddleware 自动启用",
+        "kode/di": "PSR-11 容器，让任务处理器支持构造函数依赖注入",
+        "kode/cache": "IdempotencyMiddleware 的分布式幂等存储",
+        "kode/limiting": "RateLimitMiddleware 的分布式限流后端"
     },
+    "bin": [
+        "bin/kode-queue"
+    ],
     "autoload": {
         "psr-4": {
             "Kode\\Queue\\": "src/"
@@ -58,10 +77,12 @@
     },
     "scripts": {
         "test": "phpunit",
-        "test-coverage": "phpunit --coverage-html coverage"
+        "test-coverage": "phpunit --coverage-html coverage",
+        "lint": "find src -name '*.php' -print0 | xargs -0 -n1 -P4 php -l"
     },
     "config": {
-        "sort-packages": true
+        "sort-packages": true,
+        "optimize-autoloader": true
     },
     "minimum-stability": "stable",
     "prefer-stable": true

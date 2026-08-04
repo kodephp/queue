@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kode\Queue\Config;
 
 use Kode\Queue\Enum\BackoffStrategy;
+use Kode\Queue\Exception\UnsupportedFeatureException;
 
 /**
  * Worker 运行参数（不可变）。
@@ -32,6 +33,12 @@ final readonly class WorkerOptions
      * @param bool            $catchThrowable 是否连 Error 一起捕获（false 时 Error 记录死信后终止进程）
      * @param int             $restartSignal  收到该信号后优雅退出
      * @param float           $reclaimEvery   多久扫描一次超时预留任务（秒），0 = 关闭
+     * @param float           $reclaimJitter  回收时的随机抖动上限（秒），0 = 不抖动。
+     *                                        多个 Worker 同时回收孤儿预留任务时，给每个进程加一点随机错峰，
+     *                                        避免「惊群」把后端打成一个尖峰。仅对本地内存驱动无感（单进程）。
+     * @param list<class-string<Throwable>> $nonRetryableExceptions 这类异常一旦抛出就直接进死信，
+     *                                        不再按 maxAttempts 重试。默认含 {@see UnsupportedFeatureException}：
+     *                                        「这个驱动根本不支持该功能」重试一百次也不会忽然支持，纯属浪费。
      */
     public function __construct(
         public string $name = 'kode-worker',
@@ -48,6 +55,8 @@ final readonly class WorkerOptions
         public bool $catchThrowable = true,
         public int $restartSignal = 15, // SIGTERM
         public float $reclaimEvery = 60.0,
+        public float $reclaimJitter = 0.0,
+        public array $nonRetryableExceptions = [UnsupportedFeatureException::class],
     ) {
     }
 
@@ -76,6 +85,8 @@ final readonly class WorkerOptions
             catchThrowable: (bool) ($options['catch_throwable'] ?? true),
             restartSignal: (int) ($options['restart_signal'] ?? 15),
             reclaimEvery: (float) ($options['reclaim_every'] ?? 60.0),
+            reclaimJitter: (float) ($options['reclaim_jitter'] ?? 0.0),
+            nonRetryableExceptions: self::parseExceptions($options['non_retryable'] ?? null),
         );
     }
 
@@ -147,6 +158,33 @@ final readonly class WorkerOptions
             catchThrowable: $this->catchThrowable,
             restartSignal: $this->restartSignal,
             reclaimEvery: $this->reclaimEvery,
+            reclaimJitter: $this->reclaimJitter,
+            nonRetryableExceptions: $this->nonRetryableExceptions,
         );
+    }
+
+    /**
+     * 从配置里解析「不可重试异常」清单。
+     *
+     * 允许传逗号分隔的字符串（CLI 场景）或字符串数组；非法条目直接丢弃，
+     * 避免一个拼写错误就让整个 Worker 起不来。
+     */
+    private static function parseExceptions(mixed $value): array
+    {
+        if ($value === null) {
+            return [UnsupportedFeatureException::class];
+        }
+
+        $raw = \is_array($value) ? $value : explode(',', (string) $value);
+        $clean = [];
+
+        foreach ($raw as $item) {
+            $item = trim((string) $item);
+            if ($item !== '') {
+                $clean[] = $item;
+            }
+        }
+
+        return $clean === [] ? [UnsupportedFeatureException::class] : $clean;
     }
 }

@@ -78,6 +78,24 @@ interface QueueInterface
     public function bulk(iterable $jobs, array $data = [], ?string $queue = null): array;
 
     /**
+     * 批量延迟投递（一次性把一批任务排到未来某个时点执行）。
+     *
+     * 条目形态与 {@see self::bulk()} 完全一致，区别是每个任务都会带上统一的 `$delay`；
+     * 数组条目里的 `delay` 键可单独覆盖。适合「整批定时发通知」「错峰重算」这类场景。
+     *
+     * @param  iterable<string|object|Job|array{job?: string|object, name?: string|object, data?: array<string, mixed>, payload?: array<string, mixed>, queue?: string|null, delay?: int}> $jobs
+     * @param  int|DateInterval|DateTimeInterface $delay 统一的延迟（秒 / 时间间隔 / 绝对时间）
+     * @param  array<string, mixed> $data 公共数据（与每个任务合并）
+     * @return list<string>
+     */
+    public function bulkLater(
+        int|DateInterval|DateTimeInterface $delay,
+        iterable $jobs,
+        array $data = [],
+        ?string $queue = null,
+    ): array;
+
+    /**
      * 流式构建任务：`$queue->job('SendMail')->onQueue('mail')->delay(60)->dispatch()`。
      *
      * @param array<string, mixed> $data

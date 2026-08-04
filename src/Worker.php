@@ -13,6 +13,9 @@ use Kode\Queue\Enum\Capability;
 use Kode\Queue\Event\JobFailed;
 use Kode\Queue\Event\JobProcessed;
 use Kode\Queue\Event\JobProcessing;
+use Kode\Queue\Event\JobReleased;
+use Kode\Queue\Event\WorkerPaused;
+use Kode\Queue\Event\WorkerResumed;
 use Kode\Queue\Event\WorkerStarting;
 use Kode\Queue\Event\WorkerStopped;
 use Kode\Queue\Exception\JobNotFoundException;
@@ -207,12 +210,22 @@ final class Worker
     /** 暂停消费：已预留的任务照常跑完，之后只空转不取新任务 */
     public function pause(): void
     {
+        if ($this->paused) {
+            return;
+        }
+
         $this->paused = true;
+        $this->events->dispatch(new WorkerPaused($this->options->name, 'explicit'));
     }
 
     public function resume(): void
     {
+        if (!$this->paused) {
+            return;
+        }
+
         $this->paused = false;
+        $this->events->dispatch(new WorkerResumed($this->options->name, 'explicit'));
     }
 
     public function isPaused(): bool
@@ -335,6 +348,14 @@ final class Worker
         }
 
         $this->lastReclaimAt = $now;
+
+        // 惊群防护：多个 Worker 同时回收孤儿预留任务时，给每个进程加一点随机错峰，
+        // 避免它们在同一毫秒里一起冲向后端。本地内存驱动是单进程的，这个抖动没有意义但不影响正确性。
+        if ($options->reclaimJitter > 0.0) {
+            $wait = $options->reclaimJitter * (random_int(0, 1000) / 1000);
+            $this->rest($wait);
+        }
+
         $driver = $this->queue->getDriver();
 
         foreach ($options->queues as $name) {
@@ -394,29 +415,57 @@ final class Worker
     }
 
     /**
-     * 解析并执行处理器，`Job::$timeout` 由 `pcntl_alarm()` 强制兑现。
+     * 解析并执行处理器，`Job::$timeout` 优先用 `pcntl_alarm()` 硬中断兑现。
+     *
+     * 当进程没有 pcntl（常驻 Swoole/Swow 协程、或没编译 ext-pcntl）时，硬超时不可用，
+     * 退化为**软超时兜底**：把任务跑完再比对耗时，一旦超限就按超时失败。
+     * 软超时无法中途打断执行，但至少保证「跑飞的任务」不会被误判成功、带着副作用安然过关。
      */
     private function invoke(Job $job, WorkerOptions $options): mixed
     {
         $handler = $this->resolver->resolve($job);
         $timeout = $job->timeout;
 
-        if ($timeout <= 0 || !$this->canUseAlarm()) {
+        if ($timeout <= 0) {
             return $handler($job);
         }
 
-        pcntl_alarm($timeout);
+        if ($this->canUseAlarm()) {
+            pcntl_alarm($timeout);
 
-        try {
-            return $handler($job);
-        } finally {
-            pcntl_alarm(0);
+            try {
+                return $handler($job);
+            } finally {
+                pcntl_alarm(0);
+            }
         }
+
+        // 软超时兜底：硬中断用不了时，至少在处理结束后拦下明显超时的任务。
+        $startedAt = microtime(true);
+        $result = $handler($job);
+        $elapsed = (int) ceil(microtime(true) - $startedAt);
+
+        if ($elapsed > $timeout) {
+            throw JobTimeoutException::for($job, $timeout);
+        }
+
+        return $result;
     }
 
     private function retryOrBury(ReservedJob $reserved, Throwable $e, WorkerOptions $options): void
     {
         $job = $reserved->job;
+
+        // 不可重试异常：重试多少次都不会好（例如驱动根本不支持某能力），直接落死信，
+        // 避免「重试风暴」把队列和后端一起拖死。
+        foreach ($options->nonRetryableExceptions as $type) {
+            if ($e instanceof $type) {
+                $this->bury($reserved, $e, $options);
+
+                return;
+            }
+        }
+
         $limit = $this->retryLimit($job, $options);
 
         if ($limit > 0 && $job->attempts >= $limit) {
@@ -438,6 +487,7 @@ final class Worker
         }
 
         $this->released++;
+        $this->events->dispatch(new JobReleased($reserved, $e, $options->name, $delay));
         $this->events->dispatch(new JobFailed($reserved, $e, $options->name, willRetry: true));
         $this->log(LogLevel::WARNING, sprintf(
             '%s 第 %d 次失败：%s，%d 秒后重试',
@@ -537,8 +587,18 @@ final class Worker
         pcntl_signal(\SIGUSR2, function (): void {
             $this->paused = !$this->paused;
             $this->log(LogLevel::NOTICE, $this->paused ? 'Worker 已暂停消费' : 'Worker 已恢复消费');
+            $this->events->dispatch(
+                $this->paused
+                    ? new WorkerPaused($this->options->name, 'SIGUSR2')
+                    : new WorkerResumed($this->options->name, 'SIGUSR2'),
+            );
         });
-        pcntl_signal(\SIGCONT, fn () => $this->paused = false);
+        pcntl_signal(\SIGCONT, function (): void {
+            if ($this->paused) {
+                $this->paused = false;
+                $this->events->dispatch(new WorkerResumed($this->options->name, 'SIGCONT'));
+            }
+        });
 
         // 任务超时：从执行现场直接抛异常，走正常的重试 / 死信路径
         pcntl_signal(\SIGALRM, function (): void {

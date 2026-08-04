@@ -10,8 +10,13 @@ use Kode\Queue\Enum\BackoffStrategy;
 use Kode\Queue\Event\JobFailed;
 use Kode\Queue\Event\JobProcessed;
 use Kode\Queue\Event\JobProcessing;
+use Kode\Queue\Event\JobReleased;
+use Kode\Queue\Event\WorkerPaused;
+use Kode\Queue\Event\WorkerResumed;
 use Kode\Queue\Event\WorkerStarting;
 use Kode\Queue\Event\WorkerStopped;
+use Kode\Queue\Exception\JobTimeoutException;
+use Kode\Queue\Exception\UnsupportedFeatureException;
 use Kode\Queue\Failed\ArrayFailedJobStore;
 use Kode\Queue\HandlerResolver;
 use Kode\Queue\Message\Job;
@@ -345,6 +350,168 @@ final class WorkerTest extends TestCase
 
         $worker->resume();
         self::assertFalse($worker->isPaused());
+    }
+
+    #[Test]
+    public function 不可重试异常直接进死信不重试(): void
+    {
+        $attempts = 0;
+        $worker = $this->worker([
+            'demo.unsupported' => function () use (&$attempts): never {
+                $attempts++;
+                throw new UnsupportedFeatureException('该驱动不支持此能力');
+            },
+        ]);
+
+        // 即便任务声明重试 5 次，不可重试异常也应一次到位进死信
+        $this->queue->pushJob(Job::create(
+            name: 'demo.unsupported',
+            maxAttempts: 5,
+            timeout: 0,
+            backoff: BackoffStrategy::Fixed,
+            backoffBase: 0,
+        ));
+
+        $summary = $worker->run(WorkerOptions::batch('default'));
+
+        self::assertSame(1, $attempts, '不可重试异常不应被重试');
+        self::assertSame(0, $summary->released, '不应有重投动作');
+        self::assertSame(1, $summary->failed);
+        self::assertSame(1, $this->failed->count());
+    }
+
+    #[Test]
+    public function 软超时兜底在pcntl不可用时仍判定超时(): void
+    {
+        $events = new RecordingDispatcher();
+
+        // runOnce() 不会安装信号处理器 → canUseAlarm() 为 false，
+        // 触发软超时兜底：把任务跑完再比对耗时，超限即按超时失败。
+        $this->queue->pushJob(Job::create('demo.slow', maxAttempts: 1, timeout: 1));
+
+        $worker = new Worker(
+            queue: $this->queue,
+            resolver: (new HandlerResolver())->registerMany([
+                'demo.slow' => static function (): void {
+                    usleep(1_200_000); // 1.2s > timeout=1
+                },
+            ]),
+            options: new WorkerOptions(queues: ['default'], sleep: 0.0, blockTimeout: 0.0, reclaimEvery: 0.0),
+            failedStore: $this->failed,
+            events: $events,
+        );
+
+        self::assertTrue($worker->runOnce(), '应当取到并处理该任务');
+
+        $failed = $events->firstOf(JobFailed::class);
+        self::assertInstanceOf(JobFailed::class, $failed);
+        self::assertInstanceOf(JobTimeoutException::class, $failed->exception, '软超时兜底应判定为超时异常');
+        self::assertSame(1, $this->failed->count());
+    }
+
+    #[Test]
+    public function 回收抖动开启时仍能正确回收孤儿任务(): void
+    {
+        // retry_after=1：预留超过 1 秒即视为上一个 Worker 崩溃留下的孤儿
+        $manager = QueueManager::make([
+            'default' => 'memory',
+            'connections' => ['memory' => ['driver' => 'memory', 'queue' => 'default', 'retry_after' => 1]],
+        ]);
+        $queue = $manager->connection();
+        $seen = [];
+
+        $queue->push('demo.ok', ['n' => 1]);
+        $queue->pop(); // 预留但不 ack，模拟崩溃孤儿
+
+        usleep(1_100_000); // 超过 retry_after
+
+        $worker = new Worker(
+            queue: $queue,
+            resolver: (new HandlerResolver())->registerMany([
+                'demo.ok' => static function (array $data) use (&$seen): void {
+                    $seen[] = $data['n'];
+                },
+            ]),
+            options: new WorkerOptions(
+                queues: ['default'],
+                sleep: 0.0,
+                blockTimeout: 0.0,
+                stopWhenEmpty: true,
+                reclaimEvery: 60.0,
+                reclaimJitter: 0.05,
+            ),
+            failedStore: new ArrayFailedJobStore(),
+        );
+
+        $summary = $worker->run();
+        $manager->close();
+
+        self::assertSame(1, $summary->reclaimed, '应当回收 1 个孤儿任务');
+        self::assertSame(1, $summary->processed, '回收后应当被重新消费');
+        self::assertSame([1], $seen);
+    }
+
+    #[Test]
+    public function 任务重投会派发JobReleased事件(): void
+    {
+        $events = new RecordingDispatcher();
+
+        $worker = new Worker(
+            queue: $this->queue,
+            resolver: (new HandlerResolver())->registerMany([
+                'demo.boom' => static function (): never {
+                    throw new RuntimeException('retry me');
+                },
+            ]),
+            options: new WorkerOptions(
+                queues: ['default'],
+                sleep: 0.0,
+                blockTimeout: 0.0,
+                stopWhenEmpty: true,
+                reclaimEvery: 0.0,
+                maxAttempts: 0,
+            ),
+            failedStore: $this->failed,
+            events: $events,
+        );
+
+        $this->queue->pushJob(Job::create(
+            name: 'demo.boom',
+            maxAttempts: 2,
+            timeout: 0,
+            backoff: BackoffStrategy::Fixed,
+            backoffBase: 0,
+        ));
+
+        $worker->run();
+
+        self::assertSame(1, $events->countOf(JobReleased::class), '首次失败后应当重投并派发 JobReleased');
+        $released = $events->firstOf(JobReleased::class);
+        self::assertInstanceOf(JobReleased::class, $released);
+        self::assertSame(0, $released->delay, 'Fixed 退避 + base=0 时延迟为 0');
+        self::assertSame(2, $events->countOf(JobFailed::class));
+    }
+
+    #[Test]
+    public function 暂停与恢复会派发对应生命周期事件(): void
+    {
+        $events = new RecordingDispatcher();
+
+        $worker = new Worker(
+            queue: $this->queue,
+            resolver: (new HandlerResolver())->registerMany(['demo.ok' => static fn (): bool => true]),
+            options: WorkerOptions::batch('default'),
+            failedStore: $this->failed,
+            events: $events,
+        );
+
+        $worker->pause();   // → WorkerPaused
+        $worker->resume();  // → WorkerResumed
+        $worker->pause();   // → WorkerPaused
+        $worker->resume();  // → WorkerResumed
+
+        self::assertSame(2, $events->countOf(WorkerPaused::class));
+        self::assertSame(2, $events->countOf(WorkerResumed::class));
     }
 
     /**

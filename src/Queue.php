@@ -142,6 +142,58 @@ final class Queue implements QueueInterface
     }
 
     #[Override]
+    public function bulkLater(
+        int|DateInterval|DateTimeInterface $delay,
+        iterable $jobs,
+        array $data = [],
+        ?string $queue = null,
+    ): array {
+        $prepared = [];
+
+        foreach ($jobs as $job) {
+            $prepared[] = match (true) {
+                // 已经是 Job：自带延迟优先；与 bulk() 保持一致，不强行覆盖对象上的延迟
+                $job instanceof Job => $data === [] ? $job : $job->mergePayload($data),
+                // 数组条目可单独用 'delay' 键覆盖统一延迟
+                \is_array($job) => $this->makeJob(
+                    $job['job'] ?? $job['name'] ?? throw new \InvalidArgumentException(
+                        'bulkLater() 的数组条目必须包含 "job"（或 "name"）键',
+                    ),
+                    [...$data, ...(array) ($job['data'] ?? $job['payload'] ?? [])],
+                    $job['queue'] ?? $queue,
+                    $job['delay'] ?? $delay,
+                ),
+                default => $this->makeJob($job, $data, $queue, $delay),
+            };
+        }
+
+        if ($prepared === []) {
+            return [];
+        }
+
+        $operation = Operation::of(
+            Operation::PUSH_DELAYED_BATCH,
+            $queue ?? $this->defaultQueue,
+            $this->connection,
+            arguments: [$prepared, $delay],
+            job: $prepared[0],
+        );
+
+        /** @var list<string> $ids */
+        $ids = $this->pipeline->run($operation, function (Operation $op) use ($prepared): array {
+            $ids = $this->driver->pushBatch($prepared);
+
+            foreach ($prepared as $job) {
+                $this->events->dispatch(new JobQueued($job, $this->connection));
+            }
+
+            return $ids;
+        });
+
+        return $ids;
+    }
+
+    #[Override]
     public function job(string|object $job, array $data = []): PendingDispatch
     {
         return (new PendingDispatch($this, $this->resolveName($job), $this->resolvePayload($job, $data)))

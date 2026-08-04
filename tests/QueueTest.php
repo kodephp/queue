@@ -254,4 +254,44 @@ final class QueueTest extends TestCase
     {
         self::assertSame($this->manager->connection('memory'), $this->manager->connection('memory'));
     }
+
+    #[Test]
+    public function 批量延迟投递在到期前不可见到期后整批可见(): void
+    {
+        $ids = $this->queue->bulkLater(1, ['a', 'b', 'c'], ['shared' => 1]);
+
+        self::assertCount(3, $ids);
+        self::assertSame(0, $this->queue->size(), '延迟任务在到期前不计入就绪量');
+        self::assertNull($this->queue->peek());
+        self::assertSame(3, $this->queue->stats()->delayed);
+
+        usleep(1_100_000);
+
+        self::assertSame(3, $this->queue->size(), '到期后整批可见');
+    }
+
+    #[Test]
+    public function 批量延迟条目可用delay覆盖统一延迟(): void
+    {
+        $this->queue->bulkLater(60, [
+            ['job' => 'a', 'data' => ['k' => 1]],
+            ['job' => 'b', 'data' => ['k' => 2], 'delay' => 1],
+        ]);
+
+        // 'b' 1 秒后可见，'a' 60 秒后可见
+        usleep(1_100_000);
+
+        self::assertSame(1, $this->queue->size(), '只有被覆盖为 1 秒的 b 可见');
+        self::assertSame('b', $this->queue->peek()?->name);
+    }
+
+    #[Test]
+    public function 批量延迟投递支持纯类名条目(): void
+    {
+        $ids = $this->queue->bulkLater(30, [SendMailJob::class]);
+
+        self::assertCount(1, $ids);
+        self::assertSame(0, $this->queue->size('mails'));
+        self::assertSame(1, $this->queue->stats('mails')->delayed);
+    }
 }

@@ -55,18 +55,22 @@ final class RateLimitMiddleware extends AbstractMiddleware
      *
      * 未安装该包时自动回退到内置实现，调用方无需做任何判断。
      */
-    public static function withKodeLimiting(int $capacity = 100, float $rate = 50.0): self
-    {
+    public static function withKodeLimiting(
+        int $capacity = 100,
+        float $rate = 50.0,
+        bool $blocking = true,
+        ?string $key = null,
+    ): self {
         $limiterClass = 'Kode\\Limiting\\Limiter';
 
         if (!class_exists($limiterClass)) {
-            return new self($capacity, $rate);
+            return new self($capacity, $rate, $blocking, key: $key);
         }
 
         /** @var object $limiter */
         $limiter = $limiterClass::tokenBucket($capacity, $rate);
 
-        return new self($capacity, $rate, limiter: $limiter);
+        return new self($capacity, $rate, $blocking, limiter: $limiter, key: $key);
     }
 
     #[Override]

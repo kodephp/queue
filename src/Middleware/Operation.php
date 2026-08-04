@@ -18,6 +18,7 @@ final readonly class Operation
     /** 已知操作名（类型化常量，PHP 8.3） */
     public const string PUSH = 'push';
     public const string PUSH_BATCH = 'pushBatch';
+    public const string PUSH_DELAYED_BATCH = 'pushDelayedBatch';
     public const string POP = 'pop';
     public const string PEEK = 'peek';
     public const string ACK = 'ack';
@@ -64,7 +65,7 @@ final readonly class Operation
     /** 是否为写操作（生产侧） */
     public function isWrite(): bool
     {
-        return \in_array($this->name, [self::PUSH, self::PUSH_BATCH, self::RELEASE], true);
+        return \in_array($this->name, [self::PUSH, self::PUSH_BATCH, self::PUSH_DELAYED_BATCH, self::RELEASE], true);
     }
 
     /** 是否为读操作（消费侧） */

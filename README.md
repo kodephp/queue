@@ -228,6 +228,22 @@ $ids = $queue->bulk([
 支持 `Capability::Batch` 的驱动（Redis / Database / Kafka / Memory）会走原生批量管道，
 其余驱动自动降级为逐条投递 —— 调用方无需分支。
 
+#### 批量延迟投递
+
+`bulkLater()` 与 `bulk()` 同款三种条目形态，但每条都带可见延迟（默认统一延迟，
+数组条目可用 `'delay'` 键单独覆盖）。落盘后按 `availableAt` 排序，到期才进入就绪队列。
+
+```php
+// 30 秒后统一可见
+$ids = $queue->bulkLater(30, ['mail.send', 'sms.send']);
+
+// 每条各自延迟：b 1 秒后可见，a 仍用统一的 60 秒
+$ids = $queue->bulkLater(60, [
+    ['job' => 'a', 'data' => ['k' => 1]],
+    ['job' => 'b', 'data' => ['k' => 2], 'delay' => 1],
+]);
+```
+
 ### 用 `#[AsJob]` 把参数绑在任务类上
 
 v1 的痛点是同一个任务在十个地方投递，就有十份可能不一致的 `['queue' => ..., 'max_attempts' => ...]`。
@@ -305,8 +321,10 @@ echo $summary;
 | `memoryLimit` | `128` | 内存超过 N MB 后退出 |
 | `maxAttempts` | `0` | **全局重试上限**（0 = 完全由任务自己声明） |
 | `backoff` | `null` | 覆盖任务的退避策略（不设则沿用任务自带） |
+| `nonRetryableExceptions` | `[]` | 命中即**直接落死信**、不重试（如 `UnsupportedFeatureException`），避免重试风暴 |
 | `stopWhenEmpty` | `false` | 队列跑空即退出（CI / 补数场景） |
 | `reclaimEvery` | `60.0` | 多久回收一次过期预留任务 |
+| `reclaimJitter` | `0.0` | 回收前的随机错峰秒数（>0 时多 Worker 错峰，防惊群） |
 
 两个开箱预设：
 
@@ -328,7 +346,9 @@ WorkerOptions::daemon('high');     // maxJobs=1000, maxTime=3600, memoryLimit=25
 | `SIGCONT` | 恢复 |
 
 `Job::$timeout` 由 `pcntl_alarm()` 强制兑现 —— 处理器卡死会抛 `JobTimeoutException`，
-而不是把 Worker 永久挂住。没有 `ext-pcntl` 时自动降级为软超时（仅记录）。
+而不是把 Worker 永久挂住。没有 `ext-pcntl`（常驻 Swoole / Swow 协程、或没编译该扩展）时，
+自动降级为**软超时兜底**：把任务跑完再比对耗时，一旦超限同样抛 `JobTimeoutException`。
+软超时无法中途打断执行，但至少保证「跑飞的任务」不会带着副作用被误判成功。
 
 三条自愈红线（`maxJobs` / `maxTime` / `memoryLimit`）任一触发即干净退出，
 交给 supervisor / systemd / k8s 重新拉起，从根上规避 PHP 长驻进程的内存碎片问题。
@@ -618,7 +638,10 @@ final class TenantMiddleware extends AbstractMiddleware
 | `JobProcessing` | 开始处理前 | `reserved`, `worker` |
 | `JobProcessed` | 处理成功后 | `reserved`, `worker`, `durationMs`, `result` |
 | `JobFailed` | 处理抛异常 | `reserved`, `exception`, `worker`, `willRetry` |
+| `JobReleased` | 失败后重投（将重试） | `reserved`, `exception`, `worker`, `delay` |
 | `WorkerStarting` | Worker 启动 | `options`, `pid` |
+| `WorkerPaused` | 收到暂停信号 / 显式暂停 | `worker`, `reason` |
+| `WorkerResumed` | 收到恢复信号 / 显式恢复 | `worker`, `reason` |
 | `WorkerStopped` | Worker 退出 | `worker`, `reason`, `processed`, `failed`, `uptimeSeconds` |
 
 ```php

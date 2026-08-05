@@ -219,6 +219,23 @@ final class Queue implements QueueInterface
     }
 
     #[Override]
+    public function popMany(int $max, ?string $queue = null, float $timeout = 0.0): array
+    {
+        if ($max <= 0) {
+            return [];
+        }
+
+        $target = $queue ?? $this->defaultQueue;
+        $operation = Operation::of(Operation::POP_MANY, $target, $this->connection, [$target, $max, $timeout]);
+
+        /** @var list<ReservedJob> */
+        return $this->pipeline->run(
+            $operation,
+            fn (): array => $this->driver->popMany($target, $max, $timeout),
+        );
+    }
+
+    #[Override]
     public function consume(?string $queue = null, ?int $limit = null, float $timeout = 1.0): Generator
     {
         $consumed = 0;

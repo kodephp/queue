@@ -9,6 +9,7 @@ use Kode\Queue\Contract\FailedJobStoreInterface;
 use Kode\Queue\Failed\FileFailedJobStore;
 use Kode\Queue\HandlerResolver;
 use Kode\Queue\QueueManager;
+use Kode\Queue\Scheduler;
 use Kode\Queue\Worker;
 
 /**
@@ -40,7 +41,7 @@ use Kode\Queue\Worker;
  */
 final class Application
 {
-    public const string VERSION = '2.1.0';
+    public const string VERSION = '2.2.0';
 
     /** @var array<string, string> 命令 => 一句话说明 */
     private const array COMMANDS = [
@@ -53,6 +54,9 @@ final class Application
         'failed:retry' => '重放失败任务（传 ID 或 all）',
         'failed:forget' => '删除某条失败任务',
         'failed:flush' => '清空失败任务',
+        'flush' => '清空实时队列（clear）',
+        'benchmark' => '队列吞吐压测（--jobs=N --consume）',
+        'schedule' => '运行定时任务守护（--schedule=FILE）',
     ];
 
     private QueueManager $manager;
@@ -109,6 +113,9 @@ final class Application
                 'failed:retry' => $this->failedRetry($arguments, $options),
                 'failed:forget' => $this->failedForget($arguments),
                 'failed:flush' => $this->failedFlush($options),
+                'flush' => $this->flush($options),
+                'benchmark' => $this->benchmark($options),
+                'schedule' => $this->schedule($options),
                 default => 1,
             };
         } catch (\Throwable $e) {
@@ -322,6 +329,157 @@ final class Application
         return 0;
     }
 
+    /** @param array<string, string|bool> $options */
+    private function flush(array $options): int
+    {
+        $queue = $this->connection($options);
+        $name = \is_string($options['queue'] ?? null) ? $options['queue'] : $queue->getDefaultQueue();
+        $removed = $queue->clear($name);
+
+        $this->line(sprintf('已清空队列「%s」，移除 %d 条任务。', $name, $removed));
+
+        return 0;
+    }
+
+    /**
+     * 队列吞吐压测：先批量投递 N 个任务测「入队」速率，
+     * 加 `--consume` 再启动一个内置空处理器把这批任务消费掉，测「消费」速率。
+     *
+     * @param array<string, string|bool> $options
+     */
+    private function benchmark(array $options): int
+    {
+        $queue = $this->connection($options);
+        $name = \is_string($options['queue'] ?? null) ? $options['queue'] : $queue->getDefaultQueue();
+        $jobs = max(1, (int) ($options['jobs'] ?? 10000));
+        $jobName = 'kode:benchmark';
+
+        // 入队阶段：用 bulk 一次性投递，更贴近真实批量场景
+        $t0 = microtime(true);
+        $queue->onQueue($name)->bulk(array_fill(0, $jobs, $jobName));
+        $enqueueSec = microtime(true) - $t0;
+        $enqueueRate = $enqueueSec > 0.0 ? $jobs / $enqueueSec : 0.0;
+        $this->line(sprintf(
+            '入队   : %d 个任务，耗时 %.3fs，吞吐 %.0f jobs/s',
+            $jobs,
+            $enqueueSec,
+            $enqueueRate,
+        ));
+
+        if (!isset($options['consume'])) {
+            return 0;
+        }
+
+        // 消费阶段：注册一个空处理器把这批任务跑完（stopWhenEmpty 跑空即退）
+        $worker = new Worker(
+            queue: $queue,
+            resolver: (new HandlerResolver())->registerMany([$jobName => static fn (): null => null]),
+            options: WorkerOptions::batch($name),
+            logger: new StdoutLogger($this->stream, true),
+        );
+
+        $t1 = microtime(true);
+        $summary = $worker->run();
+        $consumeSec = microtime(true) - $t1;
+        $consumeRate = $consumeSec > 0.0 ? $summary->processed / $consumeSec : 0.0;
+
+        $this->line(sprintf(
+            '消费   : %d 个任务，耗时 %.3fs，吞吐 %.0f jobs/s',
+            $summary->processed,
+            $consumeSec,
+            $consumeRate,
+        ));
+        $this->line(sprintf('结果   : 成功 %d / 失败 %d', $summary->succeeded(), $summary->failed));
+
+        return $summary->isClean() ? 0 : 1;
+    }
+
+    /**
+     * 运行定时任务守护：加载调度定义文件，按 `--interval` 节奏把到期任务投递进队列。
+     *
+     * @param array<string, string|bool> $options
+     */
+    private function schedule(array $options): int
+    {
+        $path = $options['schedule'] ?? null;
+
+        if (!\is_string($path) || !is_file($path)) {
+            $this->error('请通过 --schedule=FILE 指定调度定义文件');
+            $this->line('示例：return \\Kode\\Queue\\Scheduler::for($queue)->cron("0 9 * * *", App\\Report::class);');
+
+            return 1;
+        }
+
+        /** @var mixed $loaded */
+        $loaded = require $path;
+        $scheduler = $this->resolveScheduler($loaded, $options);
+
+        $interval = (float) ($options['interval'] ?? 60.0);
+
+        if (isset($options['once'])) {
+            $count = $scheduler->tick($interval);
+            $this->line(sprintf('本次（单次）投递 %d 个定时任务。', $count));
+
+            return 0;
+        }
+
+        $this->line(sprintf('调度守护启动，每 %.0fs 检查一次（Ctrl+C 退出）', $interval));
+
+        $scheduler->run($interval);
+
+        return 0;
+    }
+
+    /**
+     * 把调度定义文件返回值规整为 {@see Scheduler}。
+     *
+     * 支持三种返回形态：
+     *
+     * - {@see Scheduler} 实例（最推荐，直接持有自己的队列连接）
+     * - `['scheduler' => Scheduler]` 或 `['schedules' => [...]]`
+     * - 调度定义列表：`[['cron' => '0 9 * * *', 'job' => ..., 'data' => [...], 'queue' => ...], ...]`
+     *
+     * @param array<string, string|bool> $options
+     */
+    private function resolveScheduler(mixed $loaded, array $options): Scheduler
+    {
+        if ($loaded instanceof Scheduler) {
+            return $loaded;
+        }
+
+        if (!\is_array($loaded)) {
+            throw new \RuntimeException('调度文件必须返回 Scheduler 实例或定义数组');
+        }
+
+        $scheduler = $loaded['scheduler'] ?? null;
+        if ($scheduler instanceof Scheduler) {
+            return $scheduler;
+        }
+
+        $defs = $loaded['schedules'] ?? $loaded;
+        if ($defs instanceof Scheduler) {
+            return $defs;
+        }
+
+        $queue = $this->connection($options);
+        $scheduler = Scheduler::for($queue);
+
+        foreach ($defs as $def) {
+            if (!\is_array($def) || !isset($def['cron'], $def['job'])) {
+                throw new \RuntimeException('调度定义必须包含 cron 与 job 键');
+            }
+
+            $scheduler->cron(
+                $def['cron'],
+                $def['job'],
+                (array) ($def['data'] ?? []),
+                $def['queue'] ?? null,
+            );
+        }
+
+        return $scheduler;
+    }
+
     // ------------------------------------------------------------------
     // 引导与配置
     // ------------------------------------------------------------------
@@ -490,6 +648,15 @@ final class Application
         $this->line('  --tries=N         全局重试上限（0 = 由任务自己声明）');
         $this->line('  --sleep=N         队列为空时休眠秒数');
         $this->line('  --quiet           只输出错误');
+        $this->line('');
+        $this->line('benchmark 选项：');
+        $this->line('  --jobs=N      投递并（可选）消费的任务数，默认 10000');
+        $this->line('  --consume     压测入队后，再启动 Worker 把这批任务消费掉');
+        $this->line('');
+        $this->line('schedule 选项：');
+        $this->line('  --schedule=FILE  调度定义文件（返回 Scheduler 实例或定义数组）');
+        $this->line('  --interval=N     检查间隔秒数，默认 60');
+        $this->line('  --once           只检查并投递一轮就退出（dry-run）');
     }
 
     private static function truncate(string $value, int $length): string

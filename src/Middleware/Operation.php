@@ -20,6 +20,7 @@ final readonly class Operation
     public const string PUSH_BATCH = 'pushBatch';
     public const string PUSH_DELAYED_BATCH = 'pushDelayedBatch';
     public const string POP = 'pop';
+    public const string POP_MANY = 'popMany';
     public const string PEEK = 'peek';
     public const string ACK = 'ack';
     public const string RELEASE = 'release';
@@ -71,7 +72,7 @@ final readonly class Operation
     /** 是否为读操作（消费侧） */
     public function isRead(): bool
     {
-        return \in_array($this->name, [self::POP, self::PEEK, self::SIZE, self::STATS], true);
+        return \in_array($this->name, [self::POP, self::POP_MANY, self::PEEK, self::SIZE, self::STATS], true);
     }
 
     /**

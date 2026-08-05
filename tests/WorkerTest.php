@@ -20,6 +20,7 @@ use Kode\Queue\Exception\UnsupportedFeatureException;
 use Kode\Queue\Failed\ArrayFailedJobStore;
 use Kode\Queue\HandlerResolver;
 use Kode\Queue\Message\Job;
+use Kode\Queue\Middleware\MetricsMiddleware;
 use Kode\Queue\Queue;
 use Kode\Queue\QueueManager;
 use Kode\Queue\Support\WorkerSummary;
@@ -525,6 +526,69 @@ final class WorkerTest extends TestCase
             options: WorkerOptions::batch('default'),
             failedStore: $this->failed,
         );
+    }
+
+    #[Test]
+    public function worker_collects_metrics_when_middleware_attached(): void
+    {
+        $metrics = new MetricsMiddleware();
+
+        $worker = new Worker(
+            queue: $this->queue,
+            resolver: (new HandlerResolver())->registerMany([
+                'demo.ok' => static fn (): bool => true,
+                'demo.fail' => static fn (): bool => throw new \RuntimeException('boom'),
+            ]),
+            options: WorkerOptions::batch('default'),
+            failedStore: $this->failed,
+            metrics: $metrics,
+        );
+
+        $this->queue->push('demo.ok');
+        $this->queue->push('demo.fail');
+
+        $worker->run(new WorkerOptions(queues: ['default'], sleep: 0.0, maxJobs: 2, blockTimeout: 0.0, reclaimEvery: 0.0));
+
+        $snapshot = $worker->metricsSnapshot();
+
+        // pop 与 ack 都被采集到了（连接名由驱动决定，这里只断言操作后缀）
+        self::assertNotEmpty($snapshot, '指标快照不应为空');
+
+        $popKey = $this->findKey($snapshot, ':pop');
+        $ackKey = $this->findKey($snapshot, ':ack');
+        self::assertNotNull($popKey, '应当采集到 pop 操作');
+        self::assertNotNull($ackKey, '应当采集到 ack 操作');
+        self::assertSame(2, $snapshot[$popKey]['count'], '应当 pop 两次');
+        self::assertGreaterThanOrEqual(1, $snapshot[$ackKey]['count'], '至少 ack 一次');
+
+        // 摘要文本可正常渲染且含 TOTAL 行
+        $text = $metrics->summary();
+        self::assertStringContainsString('TOTAL', $text);
+        self::assertStringContainsString($popKey, $text);
+    }
+
+    #[Test]
+    public function worker_without_metrics_returns_empty_snapshot(): void
+    {
+        $worker = $this->worker(['demo.ok' => static fn (): bool => true]);
+        $this->queue->push('demo.ok');
+        $worker->run(new WorkerOptions(queues: ['default'], sleep: 0.0, maxJobs: 1, blockTimeout: 0.0, reclaimEvery: 0.0));
+
+        self::assertSame([], $worker->metricsSnapshot());
+    }
+
+    /**
+     * 在指标快照里按后缀找操作键（连接名由驱动决定，不写死）。
+     */
+    private function findKey(array $snapshot, string $suffix): ?string
+    {
+        foreach (array_keys($snapshot) as $key) {
+            if (str_ends_with($key, $suffix)) {
+                return $key;
+            }
+        }
+
+        return null;
     }
 }
 

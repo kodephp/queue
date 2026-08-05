@@ -96,6 +96,48 @@ final class MetricsMiddleware extends AbstractMiddleware
         $this->metrics = [];
     }
 
+    /**
+     * 人类可读的指标摘要（一行一条操作），结尾附一条汇总。
+     *
+     * 供 Worker 收尾日志、运维排障快速阅读。机器消费请用 {@see snapshot()} / {@see toPrometheus()}。
+     */
+    public function summary(string $prefix = '  '): string
+    {
+        if ($this->metrics === []) {
+            return $prefix . '(无采集数据)';
+        }
+
+        $lines = [];
+        $total = 0;
+        $totalErrors = 0;
+
+        foreach ($this->snapshot() as $key => $m) {
+            $total += $m['count'];
+            $totalErrors += $m['errors'];
+
+            $lines[] = sprintf(
+                '%s%-44s 次数=%-6d 错误=%-5d 错误率=%5.2f%% 平均=%8.2fms 最大=%8.2fms',
+                $prefix,
+                $key,
+                $m['count'],
+                $m['errors'],
+                $m['error_rate'] * 100,
+                $m['avg_ms'],
+                $m['max_ms'],
+            );
+        }
+
+        $lines[] = sprintf(
+            '%s%-44s 次数=%-6d 错误=%-5d',
+            $prefix,
+            'TOTAL',
+            $total,
+            $totalErrors,
+        );
+
+        return implode("\n", $lines);
+    }
+
     private function record(string $key, float $elapsedMs, bool $failed): void
     {
         $metric = $this->metrics[$key] ??= [

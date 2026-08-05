@@ -67,6 +67,19 @@ interface DriverInterface
     public function pop(string $queue, float $timeout = 0.0): ?ReservedJob;
 
     /**
+     * 批量拉取并预留最多 $max 个任务，返回预留句柄列表（顺序与拉取顺序一致）。
+     *
+     * 不支持批量原生能力的驱动可退化为「循环 pop」——本接口已在 {@see AbstractDriver}
+     * 提供默认实现，子类无需重写；想用后端原生批量能力（如 Redis `LRANGE` + `MULTI`）时再覆写。
+     *
+     * @param string $queue   队列名
+     * @param int    $max     最多返回数量
+     * @param float  $timeout 阻塞等待秒数；0 表示立即返回（非阻塞）
+     * @return list<ReservedJob>
+     */
+    public function popMany(string $queue, int $max, float $timeout = 0.0): array;
+
+    /**
      * 窥视队首任务但不消费（不支持时返回 null）。
      */
     public function peek(string $queue): ?Job;

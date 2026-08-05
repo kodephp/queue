@@ -378,6 +378,25 @@ foreach ($queue->consume('high', limit: 100, timeout: 1.0) as $reserved) {
 
 `consume()` 是 `Generator`，队列为空时按 `timeout` 阻塞等待，`limit` 到达后自然结束。
 
+### 批量取出（popMany）
+
+高吞吐场景一次往返取多条，减少网络/系统调用往返；返回的是**已预留**的任务，必须像 `pop()` 那样逐条 `ack()`，未确认的在可见性超时后由 Worker 回收。
+
+```php
+$reserved = $queue->popMany(50, 'high', timeout: 1.0);
+
+foreach ($reserved as $job) {
+    try {
+        handle($job->job);
+        $queue->ack($job);
+    } catch (Throwable $e) {
+        $queue->release($job, delay: 30);
+    }
+}
+```
+
+> `MemoryDriver` 走原生多取；不支持批量取数的驱动（如 `amqp`）按 `max` 逐条取，调用方无感。
+
 ### 运行时观测
 
 ```php
@@ -386,6 +405,29 @@ $worker->snapshot();     // WorkerSummary，实时计数
 $worker->pause();        // 暂停取新任务（当前任务不受影响）
 $worker->stop('deploy'); // 请求优雅退出，附带原因
 ```
+
+### 内建指标采集
+
+给 Worker 挂一个 `MetricsMiddleware`，`pop` / `ack` / `release` / `fail` 的耗时与错误数会被自动累计，无需在业务里散落埋点：
+
+```php
+use Kode\Queue\Middleware\MetricsMiddleware;
+use Kode\Queue\Worker;
+
+$metrics = new MetricsMiddleware(
+    sink: fn (string $op, float $ms, bool $failed) => Prometheus::observe($op, $ms, $failed),
+);
+
+$worker = Worker::for($queue, handlers: $handlers, metrics: $metrics);
+$worker->run();
+
+// 程序内取结构化快照，或渲染成人类可读摘要
+$worker->metricsSnapshot();   // array<op, {count, errors, error_rate, avg_ms, max_ms, min_ms}>
+echo $metrics->summary();     // 含 TOTAL 行的文本
+echo $metrics->toPrometheus(); // Prometheus 文本格式
+```
+
+Worker 正常退出时也会把指标摘要写进日志（INFO 级）。
 
 ## 配置
 
@@ -665,6 +707,42 @@ $manager->withEvents(new Metrics());
 
 任意 PSR-14 派发器都能直接传入；装了 **kode/event** 则完全无需接线，自动探测并接管。
 
+## 定时任务（Scheduler）
+
+基于 delayed 队列实现 cron 风格定点投递，**零依赖**，无需引入额外调度器。
+
+```php
+use Kode\Queue\Scheduler;
+
+$scheduler = Scheduler::for($queue)
+    ->cron('0 9 * * *', 'report.daily')                 // 每天 9:00 跑日报
+    ->cron('*/5 * * * *', 'heartbeat', ['region' => 'cn']) // 每 5 分钟心跳
+    ->at(new DateTimeImmutable('2026-09-01 00:00'), 'bill.settle') // 绝对时刻一次性
+    ->every(3600, 'cache.warm')                          // 固定间隔（秒）
+    ->tick(3600);                                        // 守护：每 3600 秒唤醒一次，到点就投递
+
+// 单进程常驻
+$scheduler->run(300);   // 每 300 秒轮询一次，内部按最短间隔对齐
+```
+
+- `cron()` 支持标准 5 字段（`分 时 日 月 周`，`*` `,` `-` `/` 步长，`7` 等同周日 `0`）；
+- `every()` 用相对秒数，适合「每隔 N 秒」这类简单节奏；
+- `tick()` / `run()` 返回本次触发的投递数；注入时间可测试（见 `SchedulerTest`）。
+
+CLI 直接托管一个调度定义文件：
+
+```bash
+vendor/bin/kode-queue schedule --schedule=scheduler.php --bootstrap=queue.php
+```
+
+`scheduler.php` 返回 `Scheduler` 实例即可：
+
+```php
+<?php
+use Kode\Queue\Scheduler;
+return Scheduler::for($queue)->cron('0 9 * * *', 'report.daily');
+```
+
 ## 命令行工具
 
 ```bash
@@ -677,6 +755,9 @@ vendor/bin/kode-queue <命令> [参数] [选项]
 | `size` | 查看队列积压数量 |
 | `stats` | 查看各状态统计（就绪 / 延迟 / 预留 / 合计） |
 | `diagnose` | 诊断各连接可用性与能力 |
+| `flush` | 清空实时队列（调用 `clear`） |
+| `benchmark` | 吞吐压测（`--jobs=N` 投递数，`--consume` 顺带消费掉这批） |
+| `schedule` | 运行定时任务守护（`--schedule=FILE`） |
 | `failed:list` / `failed:show` | 列出 / 查看失败任务 |
 | `failed:retry` / `failed:forget` / `failed:flush` | 重放 / 删除 / 清空 |
 
@@ -712,6 +793,14 @@ vendor/bin/kode-queue work --bootstrap=queue.php --max-jobs=500 --max-time=600 -
 ```
 
 `work` 的退出码：全部干净完成为 `0`，存在失败任务或异常退出为 `1` —— 可直接用于 CI 断言。
+
+```bash
+# 清空 default 队列（危险操作，先确认队列名）
+vendor/bin/kode-queue flush --bootstrap=queue.php --queue=default
+
+# 压测：投递 1 万条并消费掉，报告吞吐
+vendor/bin/kode-queue benchmark --jobs=10000 --consume --bootstrap=queue.php
+```
 
 ## 与 kode 生态集成
 

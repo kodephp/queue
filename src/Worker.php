@@ -24,6 +24,7 @@ use Kode\Queue\Integration\KodeEventBridge;
 use Kode\Queue\Integration\KodeRuntimeBridge;
 use Kode\Queue\Message\Job;
 use Kode\Queue\Message\ReservedJob;
+use Kode\Queue\Middleware\MetricsMiddleware;
 use Kode\Queue\Support\WorkerSummary;
 use Psr\Log\LoggerInterface;
 use Psr\Log\LogLevel;
@@ -64,6 +65,9 @@ final class Worker
 {
     private readonly EventDispatcherInterface $events;
 
+    /** 实际用于消费操作的队列句柄：未挂指标时等于 $queue，挂了指标后等于派生出的观测版 */
+    private readonly QueueInterface $consuming;
+
     private bool $shouldStop = false;
 
     private bool $paused = false;
@@ -94,9 +98,14 @@ final class Worker
         private readonly ?FailedJobStoreInterface $failedStore = null,
         ?EventDispatcherInterface $events = null,
         private readonly ?LoggerInterface $logger = null,
+        private readonly ?MetricsMiddleware $metrics = null,
     ) {
         $this->events = $events
             ?? ($queue instanceof Queue ? $queue->getEvents() : KodeEventBridge::detect());
+
+        // 派生一个挂了指标中间件的队列句柄；后续 pop/ack/release/fail 都走它，
+        // 这样操作耗时与错误数被自动统计，而无需在热路径里散落埋点。
+        $this->consuming = $metrics !== null ? $queue->withMiddleware($metrics) : $queue;
     }
 
     /**
@@ -109,12 +118,14 @@ final class Worker
         array $handlers = [],
         ?WorkerOptions $options = null,
         ?FailedJobStoreInterface $failedStore = null,
+        ?MetricsMiddleware $metrics = null,
     ): self {
         return new self(
             queue: $queue,
             resolver: (new HandlerResolver())->registerMany($handlers),
             options: $options ?? new WorkerOptions(),
             failedStore: $failedStore,
+            metrics: $metrics,
         );
     }
 
@@ -250,6 +261,12 @@ final class Worker
         return $this->resolver;
     }
 
+    /** 指标快照（未启用指标中间件时返回空数组） */
+    public function metricsSnapshot(): array
+    {
+        return $this->metrics?->snapshot() ?? [];
+    }
+
     // ------------------------------------------------------------------
     // 内部：循环与取任务
     // ------------------------------------------------------------------
@@ -305,15 +322,15 @@ final class Worker
      */
     private function reserveNext(WorkerOptions $options): ?ReservedJob
     {
-        $queues = $options->queues === [] ? [$this->queue->getDefaultQueue()] : $options->queues;
+        $queues = $options->queues === [] ? [$this->consuming->getDefaultQueue()] : $options->queues;
         $last = \count($queues) - 1;
-        $canBlock = $options->blockTimeout > 0.0 && $this->queue->supports(Capability::Blocking);
+        $canBlock = $options->blockTimeout > 0.0 && $this->consuming->supports(Capability::Blocking);
 
         foreach ($queues as $index => $name) {
             $timeout = ($canBlock && $index === $last) ? $options->blockTimeout : 0.0;
 
             try {
-                $reserved = $this->queue->pop($name, $timeout);
+                $reserved = $this->consuming->pop($name, $timeout);
             } catch (Throwable $e) {
                 // 后端瞬时抖动不该让 Worker 直接死掉：记日志、退避、下一轮再来
                 $this->log(LogLevel::ERROR, sprintf('从队列 %s 取任务失败：%s', $name, $e->getMessage()), [
@@ -356,7 +373,7 @@ final class Worker
             $this->rest($wait);
         }
 
-        $driver = $this->queue->getDriver();
+        $driver = $this->consuming->getDriver();
 
         foreach ($options->queues as $name) {
             try {
@@ -391,7 +408,7 @@ final class Worker
         try {
             $result = $this->invoke($job, $options);
 
-            $this->queue->ack($reserved);
+            $this->consuming->ack($reserved);
 
             $durationMs = (microtime(true) - $startedAt) * 1000;
             $this->events->dispatch(new JobProcessed($reserved, $options->name, $durationMs, $result));
@@ -477,7 +494,7 @@ final class Worker
         $delay = $this->retryDelay($job, $options);
 
         try {
-            $this->queue->release($reserved, $delay);
+            $this->consuming->release($reserved, $delay);
         } catch (Throwable $releaseError) {
             // 连重投都失败，只能落死信兜底，否则这条消息就真丢了
             $this->log(LogLevel::ERROR, '重投失败，转入死信：' . $releaseError->getMessage());
@@ -515,7 +532,7 @@ final class Worker
         }
 
         try {
-            $this->queue->fail($reserved, $e);
+            $this->consuming->fail($reserved, $e);
         } catch (Throwable $failError) {
             $this->log(LogLevel::ERROR, '标记任务失败时出错：' . $failError->getMessage());
         }
@@ -676,6 +693,10 @@ final class Worker
         ));
 
         $this->log(LogLevel::INFO, (string) $summary);
+
+        if ($this->metrics !== null) {
+            $this->log(LogLevel::INFO, "本轮指标采集：\n" . $this->metrics->summary());
+        }
 
         return $summary;
     }

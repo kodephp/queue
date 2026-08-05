@@ -102,6 +102,40 @@ class MemoryDriver extends AbstractDriver
     }
 
     #[Override]
+    public function popMany(string $queue, int $max, float $timeout = 0.0): array
+    {
+        $deadline = microtime(true) + max(0.0, $timeout);
+        $reserved = [];
+
+        do {
+            $this->migrateDelayed($queue);
+            $this->reclaimExpired($queue);
+
+            $bucket = $this->queues[$queue] ?? null;
+
+            // 一次性把当前就绪的任务按「优先级 + FIFO」取出最多 $max 条
+            while ($bucket !== null && !$bucket->isEmpty() && \count($reserved) < $max) {
+                /** @var Job $job */
+                $job = $bucket->extract();
+                $reservedJob = $job->incrementAttempts();
+                $this->reserved[$reservedJob->id] = ['job' => $reservedJob, 'reservedAt' => time()];
+                $reserved[] = ReservedJob::of($reservedJob, $reservedJob->id, $this->encode($reservedJob));
+            }
+
+            if (\count($reserved) >= $max) {
+                return $reserved;
+            }
+
+            // 还没凑满且允许阻塞：空轮询直到有任务或超时
+            if ($timeout > 0.0 && microtime(true) < $deadline) {
+                usleep(10_000);
+            }
+        } while ($timeout > 0.0 && microtime(true) < $deadline);
+
+        return $reserved;
+    }
+
+    #[Override]
     public function ack(ReservedJob $job): bool
     {
         unset($this->reserved[(string) $job->receipt]);

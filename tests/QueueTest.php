@@ -7,6 +7,7 @@ namespace Kode\Queue\Tests;
 use Kode\Queue\Enum\Capability;
 use Kode\Queue\Enum\Priority;
 use Kode\Queue\Message\Job;
+use Kode\Queue\Message\ReservedJob;
 use Kode\Queue\Queue;
 use Kode\Queue\QueueManager;
 use Kode\Queue\Tests\Fixtures\SendMailJob;
@@ -114,6 +115,51 @@ final class QueueTest extends TestCase
         self::assertNotNull($second);
         self::assertSame(2, $second->job->attempts);
         self::assertSame($first->job->id, $second->job->id, '重投必须是同一条消息');
+    }
+
+    #[Test]
+    public function popMany_一次可取走多条任务(): void
+    {
+        for ($i = 1; $i <= 5; $i++) {
+            $this->queue->push('demo.hello', ['n' => $i]);
+        }
+
+        $batch = $this->queue->popMany(3);
+
+        self::assertCount(3, $batch, '应当一次取出 3 条');
+        self::assertContainsOnlyInstancesOf(ReservedJob::class, $batch);
+        self::assertSame(2, $this->queue->size(), '队列里还应剩 2 条');
+        self::assertSame(3, $this->queue->stats()->reserved, '取出的 3 条都应处于预留态');
+
+        // 取出的任务必须能正常 ack
+        foreach ($batch as $reserved) {
+            self::assertTrue($this->queue->ack($reserved));
+        }
+        self::assertSame(0, $this->queue->stats()->reserved);
+    }
+
+    #[Test]
+    public function popMany_不超过队列实际长度(): void
+    {
+        for ($i = 1; $i <= 2; $i++) {
+            $this->queue->push('demo.hello', ['n' => $i]);
+        }
+
+        self::assertCount(2, $this->queue->popMany(10), '请求 10 条但只取得到 2 条');
+    }
+
+    #[Test]
+    public function popMany_保持优先级与_FIFO_顺序(): void
+    {
+        $this->queue->push('demo.low');
+        $this->queue->withPriority(Priority::High)->push('demo.high');
+        $this->queue->push('demo.low2');
+
+        $batch = $this->queue->popMany(3);
+        $names = array_map(static fn (ReservedJob $r): string => $r->job->name, $batch);
+
+        // 高优先级排在最前，其余保持入队顺序
+        self::assertSame(['demo.high', 'demo.low', 'demo.low2'], $names);
     }
 
     #[Test]

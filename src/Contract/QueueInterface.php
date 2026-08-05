@@ -110,6 +110,18 @@ interface QueueInterface
     public function pop(?string $queue = null, float $timeout = 0.0): ?ReservedJob;
 
     /**
+     * 批量拉取并预留最多 $max 个任务（一次往返取多条，提升高吞吐场景的利用率）。
+     *
+     * 返回的是已经「预留」的任务句柄，必须像 `pop()` 那样 `ack()`；
+     * 未确认的任务在可见性超时后由 Worker 的 `reclaimExpired()` 回收。
+     *
+     * @param  int   $max     最多返回数量（≤ 0 直接返回空数组）
+     * @param  float $timeout 阻塞等待秒数，0 为非阻塞；仅第一个任务会阻塞，其余即时返回
+     * @return list<ReservedJob>
+     */
+    public function popMany(int $max, ?string $queue = null, float $timeout = 0.0): array;
+
+    /**
      * 以生成器方式持续消费，天然适配 `foreach`：
      *
      * ```php

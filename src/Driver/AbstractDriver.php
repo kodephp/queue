@@ -106,6 +106,30 @@ abstract class AbstractDriver implements DriverInterface
         return null;
     }
 
+    /**
+     * 批量拉取默认退化为「循环 pop」：只有首个任务允许阻塞，
+     * 其余即时返回，避免一条阻塞把整批卡住。具备原生批量能力的驱动应覆写本方法。
+     *
+     * @return list<ReservedJob>
+     */
+    #[Override]
+    public function popMany(string $queue, int $max, float $timeout = 0.0): array
+    {
+        $reserved = [];
+
+        for ($i = 0; $i < $max; $i++) {
+            $job = $this->pop($queue, $timeout);
+            if ($job === null) {
+                break;
+            }
+            $reserved[] = $job;
+            // 只有第一个任务允许按 timeout 阻塞；后续任务即时返回
+            $timeout = 0.0;
+        }
+
+        return $reserved;
+    }
+
     #[Override]
     public function clear(string $queue): int
     {

@@ -61,7 +61,7 @@ final class ContextMiddleware extends AbstractMiddleware
             if (\is_object($job) && property_exists($job, 'headers')) {
                 /** @var array<string, mixed> $headers */
                 $headers = $job->headers;
-                KodeContextBridge::import($headers);
+                KodeContextBridge::import($headers, $this->keys);
             }
         }
 

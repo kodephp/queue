@@ -118,6 +118,20 @@ final class IdGenerator
     }
 
     /**
+     * fork 之后重新播种。
+     *
+     * 子进程会原样继承父进程的随机引擎状态与「同毫秒单调自增计数」，
+     * 两个进程若在同一毫秒生成 ULID 会得到完全相同的 ID。
+     * worker 派生子进程后必须调用本方法（KodeRuntimeBridge::reset 已挂钩）。
+     */
+    public static function reseedAfterFork(): void
+    {
+        self::$randomizer = new Randomizer(new Xoshiro256StarStar());
+        self::$lastTimestamp = 0;
+        self::$lastRandom = [];
+    }
+
+    /**
      * 注入自定义随机引擎——测试中可用确定性种子复现随机序列。
      */
     public static function setRandomizer(?Randomizer $randomizer): void

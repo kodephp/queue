@@ -6,6 +6,7 @@ namespace Kode\Queue\Driver;
 
 use Kode\Queue\Enum\Capability;
 use Kode\Queue\Enum\DriverType;
+use Kode\Queue\Enum\JobStatus;
 use Kode\Queue\Message\Job;
 use Kode\Queue\Message\ReservedJob;
 use Kode\Queue\Support\QueueStats;
@@ -166,16 +167,11 @@ class AmqpDriver extends AbstractDriver
         return $this->guard('release', function () use ($job, $delay): bool {
             $channel = $this->channel();
 
-            if ($delay <= 0) {
-                // 无延迟：直接 nack 回原队列，由 broker 保证不丢
-                $channel->basic_nack($this->tagOf($job), false, true);
-
-                return true;
-            }
-
-            // 有延迟：先确认原消息，再以延迟消息重新投递
+            // 统一走 ack + 重新投递：nack(requeue) 回投的是原始消息体，
+            // attempts 会在每次 pop 时从旧负载重新 +1，maxAttempts 永远达不到，
+            // 反复失败的任务将形成无限重试风暴。$job->job 已含自增后的 attempts。
             $channel->basic_ack($this->tagOf($job));
-            $this->push($job->job->delayedBy($delay));
+            $this->push($delay > 0 ? $job->job->delayedBy($delay) : $job->job->withStatus(JobStatus::Pending));
 
             return true;
         }, ['job' => $job->job->id, 'delay' => $delay]);

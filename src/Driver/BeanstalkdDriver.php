@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kode\Queue\Driver;
 
 use Kode\Queue\Enum\DriverType;
+use Kode\Queue\Enum\JobStatus;
 use Kode\Queue\Exception\DriverException;
 use Kode\Queue\Message\Job;
 use Kode\Queue\Message\ReservedJob;
@@ -127,11 +128,25 @@ class BeanstalkdDriver extends AbstractDriver
     public function release(ReservedJob $job, int $delay = 0): bool
     {
         return $this->guard('release', function () use ($job, $delay): bool {
-            $this->client()->release(
-                $this->handleOf($job),
-                $job->job->priority->toBeanstalkd(),
-                max(0, $delay),
+            $client = $this->client();
+            $delay = max(0, $delay);
+
+            // Beanstalkd 的 release 回投的是原始消息体，attempts 不会持久化，
+            // 反复失败的任务每次 pop 都从旧负载重新 +1，maxAttempts 形同虚设。
+            // 改为「先投新负载（含自增后的 attempts），再删旧 handle」：
+            // 顺序保证最坏是重复投递而非丢任务。
+            $next = $job->job->delayedBy($delay)->withStatus(
+                $delay > 0 ? JobStatus::Delayed : JobStatus::Pending,
             );
+
+            $client->useTube($this->tube($next->queue));
+            $client->put(
+                $this->encode($next),
+                $next->priority->toBeanstalkd(),
+                $delay,
+                $next->timeout > 0 ? $next->timeout : $this->retryAfter(),
+            );
+            $client->delete($this->handleOf($job));
 
             return true;
         }, ['job' => $job->job->id, 'delay' => $delay]);

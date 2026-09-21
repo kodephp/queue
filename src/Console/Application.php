@@ -292,7 +292,7 @@ final class Application
 
         foreach ($records as $record) {
             // 重置尝试次数，否则一进队列就又判定为「已耗尽」
-            $job = $record['job']->withStatus(\Kode\Queue\Enum\JobStatus::Pending);
+            $job = $record['job']->resetAttempts()->withStatus(\Kode\Queue\Enum\JobStatus::Pending);
             $this->manager->connection($record['connection'])->pushJob($job);
             $store->forget($record['id']);
             $replayed++;

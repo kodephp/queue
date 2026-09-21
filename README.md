@@ -185,6 +185,12 @@ $queue->reclaimExpired('high');   // 手动回收；Worker 每 60 秒自动调�
 
 **推论**：`retry_after` 必须大于任务最长执行时间，否则任务会被重复消费。
 
+**release 的原子性**：放回队列是一次「比较并交换」——只有**当前预留记录还在、且 attempts 未被
+其他 Worker 改动**时 release 才生效（Redis 侧由 Lua 脚本保证，Database 侧由带条件的 UPDATE 保证）。
+预留记录已被回收（例如 Worker 超时后任务被别的进程取走）时 release 返回 `false`，
+而不是把别人正在跑的任务拽回来。Beanstalkd / AMQP 的重投走「先投递后删除」，
+重试负载携带已自增的 attempts，杜绝无限重投风暴。
+
 ## 投递任务
 
 ### 四种投递方式
@@ -336,6 +342,9 @@ WorkerOptions::daemon('high');     // maxJobs=1000, maxTime=3600, memoryLimit=25
 > **重试语义**：任务自带的 `maxAttempts` **优先**，Worker 的 `maxAttempts` 只作为全局天花板
 > （两者取较小值）。这样 Worker 的配置不会让某个任务精心声明的 `maxAttempts: 10` 永久失效。
 > 退避同理：`WorkerOptions::$backoff` 不设置时沿用任务自带策略。
+
+> **布尔开关写字符串**：从 CLI / env 进来的值都是字符串，`fromArray()` 会识别
+> `true/1/yes/on` 与 `false/0/no/off`（不区分大小写）。直接 `(bool) 'false'` 会得到 true 的老坑不再存在。
 
 ### 生命周期与信号
 
@@ -515,6 +524,7 @@ $manager->connection('mysql')->push('report.build', $data);
 | `QUEUE_RETRY_AFTER` | 可见性超时 |
 
 前缀可改：`QueueConfig::fromEnv('MYAPP_QUEUE_')`。
+注意 `"0"` 是合法取值（如 `QUEUE_RETRY_AFTER=0`），不会被当成「未设置」而回落默认值。
 
 ### 敏感信息保护
 
@@ -618,6 +628,9 @@ vendor/bin/kode-queue failed:retry 01KZ62AAPT... --bootstrap=queue.php
 vendor/bin/kode-queue failed:retry all --bootstrap=queue.php --queue=mails
 vendor/bin/kode-queue failed:flush --bootstrap=queue.php
 ```
+
+`failed:retry` 重放前会把 attempts **清零**（`Job::resetAttempts()`）：人工修好问题后重放，
+期望是「完整重试预算的新执行」，而不是继承死信时的计数、被重试天花板直接秒拒。
 
 ## 中间件
 

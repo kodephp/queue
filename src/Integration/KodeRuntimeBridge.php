@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kode\Queue\Integration;
 
+use Kode\Queue\Support\IdGenerator;
+
 /**
  * 运行时桥接（对接 **kode/runtime** / **kode/fibers** / Swoole / Swow）。
  *
@@ -116,6 +118,7 @@ final class KodeRuntimeBridge
     public static function reset(): void
     {
         self::$runtime = null;
+        IdGenerator::reseedAfterFork();
     }
 
     private static function inSwooleCoroutine(): bool

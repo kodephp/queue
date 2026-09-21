@@ -81,8 +81,8 @@ final readonly class WorkerOptions
             maxAttempts: (int) ($options['max_attempts'] ?? 0),
             backoff: BackoffStrategy::tryFrom((string) ($options['backoff'] ?? '')),
             backoffBase: (int) ($options['backoff_base'] ?? 0),
-            stopWhenEmpty: (bool) ($options['stop_when_empty'] ?? false),
-            catchThrowable: (bool) ($options['catch_throwable'] ?? true),
+            stopWhenEmpty: self::toBool($options['stop_when_empty'] ?? false, false),
+            catchThrowable: self::toBool($options['catch_throwable'] ?? true, true),
             restartSignal: (int) ($options['restart_signal'] ?? 15),
             reclaimEvery: (float) ($options['reclaim_every'] ?? 60.0),
             reclaimJitter: (float) ($options['reclaim_jitter'] ?? 0.0),
@@ -169,6 +169,29 @@ final readonly class WorkerOptions
      * 允许传逗号分隔的字符串（CLI 场景）或字符串数组；非法条目直接丢弃，
      * 避免一个拼写错误就让整个 Worker 起不来。
      */
+    /**
+     * 布尔归一化。
+     *
+     * CLI / env 传来的都是字符串，直接 `(bool) 'false'` 会得到 true，
+     * 相当于开关永远打不开——这里显式识别常见的假值写法。
+     */
+    private static function toBool(mixed $value, bool $default): bool
+    {
+        if (\is_bool($value)) {
+            return $value;
+        }
+
+        if (\is_string($value)) {
+            return match (strtolower(trim($value))) {
+                'true', '1', 'yes', 'on' => true,
+                'false', '0', 'no', 'off' => false,
+                default => $default,
+            };
+        }
+
+        return \is_int($value) ? $value !== 0 : $default;
+    }
+
     private static function parseExceptions(mixed $value): array
     {
         if ($value === null) {

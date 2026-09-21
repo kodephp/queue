@@ -63,8 +63,14 @@ final readonly class QueueConfig
      */
     public static function fromEnv(string $prefix = 'QUEUE_'): self
     {
-        $get = static fn (string $key, mixed $default = null): mixed
-            => $_ENV[$prefix . $key] ?? getenv($prefix . $key) ?: $default;
+        $get = static function (string $key, mixed $default = null) use ($prefix): mixed {
+            $name = $prefix . $key;
+            $value = $_ENV[$name] ?? getenv($name);
+
+            // 只有「未设置」(getenv 返回 false) 与空串才回落默认值；
+            // "0" 是合法配置（如端口、数据库序号），不能被 `?:` 吞掉。
+            return $value === false || $value === null || $value === '' ? $default : $value;
+        };
 
         $driver = (string) $get('DRIVER', DriverType::DEFAULT->value);
 

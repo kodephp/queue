@@ -163,7 +163,8 @@ class RedisDriver extends AbstractDriver
                 $delay > 0 ? JobStatus::Delayed : JobStatus::Pending,
             );
 
-            $removed = $this->client()->evaluate(
+            // 1=预留记录仍属本 worker 且已放回；0=预留已被回收，绝不能盲投新副本（会双份）
+            return (int) $this->client()->evaluate(
                 LuaScripts::RELEASE,
                 [
                     $this->key($next->queue),
@@ -178,9 +179,7 @@ class RedisDriver extends AbstractDriver
                         : (string) $next->priority->toRedisScore(microtime(true)),
                     $delay > 0 ? '1' : '0',
                 ],
-            );
-
-            return (int) $removed >= 0;
+            ) === 1;
         }, ['job' => $job->job->id, 'delay' => $delay]);
     }
 

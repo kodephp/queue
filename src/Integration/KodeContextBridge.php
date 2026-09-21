@@ -93,13 +93,23 @@ final class KodeContextBridge
     /**
      * 导入上下文（消费端还原链路信息）。
      *
+     * $scopeKeys 中未被本次数据覆盖的键会被显式清空：常驻 worker 顺序消费
+     * 多个任务时，不清空会让上一个任务的 tenant_id / user_id 残留给下一个。
+     *
      * @param array<string, mixed> $data
+     * @param list<string>         $scopeKeys
      */
-    public static function import(array $data): void
+    public static function import(array $data, array $scopeKeys = []): void
     {
         foreach ($data as $key => $value) {
             if (\is_string($key) && $key !== 'queued_at') {
                 self::set($key, $value);
+            }
+        }
+
+        foreach ($scopeKeys as $key) {
+            if (\is_string($key) && !\array_key_exists($key, $data)) {
+                self::set($key, null);
             }
         }
     }

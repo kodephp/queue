@@ -186,14 +186,16 @@ class DatabaseDriver extends AbstractDriver
                 $delay > 0 ? JobStatus::Delayed : JobStatus::Pending,
             );
 
+            // CAS：仅当行仍处于本 worker 的预留中（reserved_at 非空且 attempts 未被
+            // 超时回收后的再次预留推进）才回写，否则会劫持他人正在处理的任务
             $stmt = $this->statement(
                 'release',
                 sprintf(
-                    'UPDATE %s SET reserved_at = NULL, available_at = ?, attempts = ?, payload = ? WHERE id = ?',
+                    'UPDATE %s SET reserved_at = NULL, available_at = ?, attempts = ?, payload = ? WHERE id = ? AND reserved_at IS NOT NULL AND attempts = ?',
                     $this->table(),
                 ),
             );
-            $stmt->execute([$next->availableAt, $next->attempts, $this->encode($next), $job->receipt]);
+            $stmt->execute([$next->availableAt, $next->attempts, $this->encode($next), $job->receipt, $next->attempts]);
 
             return $stmt->rowCount() > 0;
         }, ['job' => $job->job->id, 'delay' => $delay]);

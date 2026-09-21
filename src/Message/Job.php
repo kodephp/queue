@@ -211,6 +211,12 @@ final readonly class Job implements ArrayAccess, JsonSerializable, Stringable
         return $this->mutate(attempts: $this->attempts + 1, status: JobStatus::Reserved);
     }
 
+    /** 尝试次数清零（人工重放死信时使用，否则一进队列即判定「已耗尽」） */
+    public function resetAttempts(): self
+    {
+        return $this->mutate(attempts: 0);
+    }
+
     /** 延后到 N 秒之后可执行 */
     public function delayedBy(int $seconds): self
     {

@@ -146,19 +146,25 @@ final class LuaScripts
         LUA;
 
     /**
-     * 放回队列重试：移除旧预留记录并写入新负载，原子完成避免任务凭空消失。
+     * 放回队列重试：仅当旧预留记录仍在（未被超时回收/被他人接管）时才写入新负载，
+     * 原子完成避免任务凭空消失，也避免回收后重复投放两份。
      *
      * KEYS[1]=ready KEYS[2]=delayed KEYS[3]=reserved
      * ARGV[1]=旧负载 ARGV[2]=新负载 ARGV[3]=分值 ARGV[4]=是否延迟
+     *
+     * @return int 1=已放回，0=预留已失效（放弃写入）
      */
     public const string RELEASE = <<<'LUA'
         local removed = redis.call('ZREM', KEYS[3], ARGV[1])
+        if removed == 0 then
+            return 0
+        end
         local target = KEYS[1]
         if ARGV[4] == '1' then
             target = KEYS[2]
         end
         redis.call('ZADD', target, tonumber(ARGV[3]), ARGV[2])
-        return removed
+        return 1
         LUA;
 
     /**

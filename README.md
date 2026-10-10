@@ -1,9 +1,9 @@
 # Kode\Queue
 
-现代化 PHP 8.3+ 队列组件。不可变消息对象、可见性超时与至少一次投递、内建 Worker 与死信存储，
+现代化 PHP 8.4+ 队列组件。不可变消息对象、可见性超时与至少一次投递、内建 Worker 与死信存储，
 一套 API 覆盖 Redis / 数据库 / Beanstalkd / AMQP / Kafka / 内存 / 同步。
 
-[![PHP Version](https://img.shields.io/badge/php-%3E%3D8.3-777bb4.svg)](https://php.net)
+[![PHP Version](https://img.shields.io/badge/php-%3E%3D8.4-777bb4.svg)](https://php.net)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.0.0-brightgreen.svg)](https://github.com/kodephp/queue/releases)
 
@@ -77,7 +77,7 @@ composer require kode/queue
 
 | 项目 | 要求 |
 | --- | --- |
-| PHP | >= 8.3 |
+| PHP | >= 8.4 |
 | 必需扩展 | `ext-json`、`ext-mbstring` |
 | 强烈建议 | `ext-pcntl`（Worker 优雅退出与超时中断） |
 

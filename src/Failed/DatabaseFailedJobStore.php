@@ -44,7 +44,7 @@ final class DatabaseFailedJobStore implements FailedJobStoreInterface
     public static function fromDsn(
         string $dsn,
         ?string $username = null,
-        ?string $password = null,
+        #[\SensitiveParameter] ?string $password = null,
         string $table = 'failed_jobs',
     ): self {
         return new self(new PDO($dsn, $username, $password, [

@@ -283,5 +283,6 @@ abstract class AbstractDriver implements DriverInterface
         return $job->queue === $target ? $job : $job->withQueue($target);
     }
 
+    #[\Override]
     abstract public function type(): DriverType;
 }

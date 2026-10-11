@@ -31,6 +31,7 @@ class QueueException extends RuntimeException implements QueueExceptionInterface
      *
      * @return array<string, mixed>
      */
+    #[\Override]
     public function context(): array
     {
         return $this->context;

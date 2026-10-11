@@ -51,6 +51,7 @@ final class StdoutLogger extends AbstractLogger
     /**
      * @param array<string, mixed> $context
      */
+    #[\Override]
     public function log($level, string|Stringable $message, array $context = []): void
     {
         $level = (string) $level;

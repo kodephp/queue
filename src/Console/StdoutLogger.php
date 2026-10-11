@@ -104,7 +104,7 @@ final class StdoutLogger extends AbstractLogger
     private static function detectColorSupport($stream): bool
     {
         // 重定向到文件时不要写入转义序列，否则日志里全是乱码
-        if (getenv('NO_COLOR') !== false || !\function_exists('stream_isatty')) {
+        if (getenv('NO_COLOR') !== false) {
             return false;
         }
 

@@ -842,7 +842,7 @@ KodeRuntimeBridge::detect();      // 'swoole' | 'swow' | 'fiber' | 'cli' | 'fpm'
 | 序列化器 | 说明 |
 | --- | --- |
 | `json`（默认） | 可读、跨语言，用 `json_validate()` 预校验（PHP 8.3 新函数，比 try-catch 快） |
-| `igbinary` | 体积约为 JSON 的 1/2，速度约 2 倍，需要 `ext-igbinary` |
+| `igbinary` | 体积约为 JSON 的 1/2，速度约 2 倍，需要 `ext-igbinary`；反序列化默认 `allowed_classes=false`（纯数据语义对齐 JSON，封死 broker 负载的对象注入），如需旧版对象复活语义：`new IgbinarySerializer(true)` |
 | `composite` | 写用 igbinary、读时自动识别，**支持在线平滑切换** |
 
 ```php

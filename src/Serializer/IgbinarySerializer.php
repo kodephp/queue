@@ -22,7 +22,14 @@ final class IgbinarySerializer implements SerializerInterface
     /** 魔数前缀，用于混合负载识别 */
     public const string MAGIC = "\x00KQI";
 
-    public function __construct()
+    /**
+     * @param bool $allowedClasses 是否允许负载实例化对象类。
+     *                              默认 false——与 JsonSerializer 的「纯数据」
+     *                              语义对齐（Job 字段本就声明为 array/scalar），
+     *                              同时封死经 broker 投递的反序列化对象注入。
+     *                              传 true 恢复旧版对象复活行为（仅限可信内网负载）。
+     */
+    public function __construct(private readonly bool $allowedClasses = false)
     {
         if (!\extension_loaded('igbinary')) {
             throw new SerializationException(
@@ -60,14 +67,55 @@ final class IgbinarySerializer implements SerializerInterface
             throw SerializationException::decodeFailed($raw, self::NAME);
         }
 
+        $blob = substr($raw, \strlen(self::MAGIC));
+
         /** @var array<string, mixed>|null $data */
-        $data = @igbinary_unserialize(substr($raw, \strlen(self::MAGIC)));
+        $data = self::optionsSupported()
+            ? @igbinary_unserialize($blob, ['allowed_classes' => $this->allowedClasses])
+            : @igbinary_unserialize($blob); // 旧版 igbinary 无第二参（3.2.6 前）
 
         if (!\is_array($data)) {
             throw SerializationException::decodeFailed($raw, self::NAME);
         }
 
+        // 白名单模式下残留的 __PHP_Incomplete_Class 说明负载里夹带了类——
+        // 与其让任务带着垃圾载荷跑进业务，不如在入口干净地拒绝。
+        if (! $this->allowedClasses && self::containsIncomplete($data)) {
+            throw SerializationException::decodeFailed($raw, self::NAME);
+        }
+
         return Job::fromArray($data);
+    }
+
+    /** igbinary >= 3.2.6 才支持 ['allowed_classes' => ...] 选项（静态探测一次） */
+    private static function optionsSupported(): bool
+    {
+        static $supported = null;
+        if ($supported === null) {
+            try {
+                $supported = (new \ReflectionFunction('igbinary_unserialize'))->getNumberOfParameters() >= 2;
+            } catch (\ReflectionException) {
+                $supported = false;
+            }
+        }
+
+        return $supported;
+    }
+
+    private static function containsIncomplete(mixed $value): bool
+    {
+        if ($value instanceof \__PHP_Incomplete_Class) {
+            return true;
+        }
+        if (\is_array($value)) {
+            foreach ($value as $item) {
+                if (self::containsIncomplete($item)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     #[Override]

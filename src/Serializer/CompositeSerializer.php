@@ -61,12 +61,6 @@ final class CompositeSerializer implements SerializerInterface
     #[Override]
     public function supports(string $raw): bool
     {
-        foreach ($this->readers as $reader) {
-            if ($reader->supports($raw)) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_any($this->readers, fn($reader) => $reader->supports($raw));
     }
 }

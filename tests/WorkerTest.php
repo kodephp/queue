@@ -19,6 +19,7 @@ use Kode\Queue\Exception\JobTimeoutException;
 use Kode\Queue\Exception\UnsupportedFeatureException;
 use Kode\Queue\Failed\ArrayFailedJobStore;
 use Kode\Queue\HandlerResolver;
+use Kode\Queue\Integration\KodeContextBridge;
 use Kode\Queue\Message\Job;
 use Kode\Queue\Middleware\MetricsMiddleware;
 use Kode\Queue\Queue;
@@ -164,6 +165,77 @@ final class WorkerTest extends TestCase
         self::assertSame(0, $summary->released, '处理器缺失重试无意义');
         self::assertSame(1, $summary->failed);
         self::assertSame(1, $this->failed->count());
+    }
+
+    #[Test]
+    public function 任务处理器写入的上下文不泄漏给下一个任务(): void
+    {
+        KodeContextBridge::reset();
+
+        $seenBySecond = null;
+        $worker = $this->worker([
+            'demo.write-ctx' => static function (): string {
+                KodeContextBridge::set('biz_key', 'from-first-job');
+                KodeContextBridge::set('biz_order', 42);
+
+                return 'ok';
+            },
+            'demo.read-ctx' => static function () use (&$seenBySecond): string {
+                $seenBySecond = KodeContextBridge::get('biz_key');
+
+                return 'ok';
+            },
+        ]);
+
+        $this->queue->push('demo.write-ctx');
+        $this->queue->push('demo.read-ctx');
+
+        $summary = $worker->run(WorkerOptions::batch('default'));
+
+        self::assertSame(2, $summary->processed);
+        self::assertSame(0, $summary->failed);
+        self::assertNull(
+            $seenBySecond,
+            '第一个任务经 Context 写入的业务键必须在任务结束后回滚，不得脏读给下一个任务'
+        );
+        self::assertNull(KodeContextBridge::get('biz_order'), '回滚须覆盖处理器写入的全部键');
+    }
+
+    #[Test]
+    public function 上下文隔离不遮蔽导入的链路键(): void
+    {
+        KodeContextBridge::reset();
+        // 模拟 ContextMiddleware 在 pop 时导入的链路键（生产侧在 root 作用域）
+        KodeContextBridge::set('trace_id', 'trace-from-producer');
+
+        $traceSeenInside = null;
+        $worker = $this->worker([
+            'demo.read-trace' => static function () use (&$traceSeenInside): string {
+                $traceSeenInside = KodeContextBridge::get('trace_id');
+                KodeContextBridge::set('handler_only', 'x');
+
+                return 'ok';
+            },
+            'demo.after' => static function (): string {
+                return 'ok';
+            },
+        ]);
+
+        $this->queue->push('demo.read-trace');
+        $this->queue->push('demo.after');
+
+        $summary = $worker->run(WorkerOptions::batch('default'));
+
+        self::assertSame(2, $summary->processed);
+        self::assertSame(
+            'trace-from-producer',
+            $traceSeenInside,
+            'fork 语义：ContextMiddleware 导入的链路键必须对处理器可见'
+        );
+        self::assertNull(
+            KodeContextBridge::get('handler_only'),
+            'fork 语义：处理器新增的键不得外泄到任务外'
+        );
     }
 
     #[Test]

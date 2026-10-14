@@ -644,7 +644,7 @@ vendor/bin/kode-queue failed:flush --bootstrap=queue.php
 | `IdempotencyMiddleware` | 幂等去重，需要 PSR-16 缓存 |
 | `LoggingMiddleware` | PSR-3 日志，可设慢操作阈值 |
 | `MetricsMiddleware` | 指标埋点，回调形态对接 Prometheus / StatsD |
-| `ContextMiddleware` | 透传 trace_id / tenant 等上下文，装了 kode/context 自动接管 |
+| `ContextMiddleware` | 透传 trace_id / tenant 等上下文，装了 kode/context 自动接管；worker 每任务 fork 隔离，处理器写入不跨任务泄漏 |
 
 ```php
 use Kode\Queue\Middleware\{CircuitBreakerMiddleware, LoggingMiddleware, RateLimitMiddleware};

@@ -20,6 +20,7 @@ use Kode\Queue\Event\WorkerStarting;
 use Kode\Queue\Event\WorkerStopped;
 use Kode\Queue\Exception\JobNotFoundException;
 use Kode\Queue\Exception\JobTimeoutException;
+use Kode\Queue\Integration\KodeContextBridge;
 use Kode\Queue\Integration\KodeEventBridge;
 use Kode\Queue\Integration\KodeRuntimeBridge;
 use Kode\Queue\Message\Job;
@@ -406,7 +407,11 @@ final class Worker
         $this->log(LogLevel::INFO, sprintf('开始处理 %s（第 %d 次尝试）', (string) $job, max(1, $job->attempts)));
 
         try {
-            $result = $this->invoke($job, $options);
+            // 任务级上下文隔离：常驻 worker 顺序消费时，处理器经 Context::set
+            // 写入的业务键（含异常路径）必须在任务结束后整体回滚，否则会脏读
+            // 给下一个任务。scoped() 取 fork 语义——继承 ContextMiddleware 在
+            // pop 时导入的 trace_id / tenant_id，但处理器新增的键不外泄。
+            $result = KodeContextBridge::scoped(fn (): mixed => $this->invoke($job, $options));
 
             $this->consuming->ack($reserved);
 

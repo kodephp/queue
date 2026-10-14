@@ -2,7 +2,7 @@
     "name": "kode/queue",
     "description": "现代化 PHP 8.4+ 队列组件：不可变消息对象、可见性超时与至少一次投递、内建 Worker 与死信存储，支持 Redis / 数据库 / Beanstalkd / AMQP / Kafka 等多种后端",
     "type": "library",
-    "version": "3.0.8",
+    "version": "3.0.9",
     "keywords": [
         "queue",
         "job-queue",

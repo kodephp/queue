@@ -88,10 +88,8 @@ final class RetryMiddleware extends AbstractMiddleware
             return (bool) ($this->decider)($e);
         }
 
-        foreach ($this->noRetryOn as $class) {
-            if ($e instanceof $class) {
-                return false;
-            }
+        if (array_any($this->noRetryOn, fn($class) => $e instanceof $class)) {
+            return false;
         }
 
         if ($this->retryOn === []) {

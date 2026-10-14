@@ -41,7 +41,7 @@ use Kode\Queue\Worker;
  */
 final class Application
 {
-    public const string VERSION = '3.0.7';
+    public const string VERSION = '3.0.9';
 
     /** @var array<string, string> 命令 => 一句话说明 */
     private const array COMMANDS = [

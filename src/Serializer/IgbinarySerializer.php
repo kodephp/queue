@@ -108,11 +108,7 @@ final class IgbinarySerializer implements SerializerInterface
             return true;
         }
         if (\is_array($value)) {
-            foreach ($value as $item) {
-                if (self::containsIncomplete($item)) {
-                    return true;
-                }
-            }
+            return array_any($value, fn($item) => self::containsIncomplete($item));
         }
 
         return false;

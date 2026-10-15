@@ -50,7 +50,7 @@ final readonly class AsJob
         public ?int $timeout = null,
         public BackoffStrategy $backoff = BackoffStrategy::ExponentialJitter,
         public int $backoffBase = 5,
-        public bool $unique = false,
+        public private(set) bool $unique = false,
         public array $headers = [],
     ) {
     }

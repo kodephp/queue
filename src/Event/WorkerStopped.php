@@ -10,11 +10,11 @@ namespace Kode\Queue\Event;
 final readonly class WorkerStopped extends QueueEvent
 {
     public function __construct(
-        public string $worker,
+        public private(set) string $worker,
         public string $reason,
         public int $processed,
         public int $failed,
-        public float $uptimeSeconds,
+        public private(set) float $uptimeSeconds,
     ) {
         parent::__construct();
     }

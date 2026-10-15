@@ -18,7 +18,7 @@ final readonly class JobReleased extends QueueEvent
     public function __construct(
         public ReservedJob $reserved,
         public Throwable $exception,
-        public string $worker,
+        public private(set) string $worker,
         public int $delay,
     ) {
         parent::__construct();

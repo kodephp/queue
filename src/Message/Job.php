@@ -66,7 +66,7 @@ final readonly class Job implements ArrayAccess, JsonSerializable, Stringable
         public int $timeout = self::DEFAULT_TIMEOUT,
         public BackoffStrategy $backoff = BackoffStrategy::ExponentialJitter,
         public int $backoffBase = 5,
-        public int $availableAt = 0,
+        public private(set) int $availableAt = 0,
         public int $createdAt = 0,
         public JobStatus $status = JobStatus::Pending,
         public array $headers = [],

@@ -13,8 +13,8 @@ final readonly class JobProcessed extends QueueEvent
 {
     public function __construct(
         public ReservedJob $reserved,
-        public string $worker,
-        public float $durationMs,
+        public private(set) string $worker,
+        public private(set) float $durationMs,
         public mixed $result = null,
     ) {
         parent::__construct();

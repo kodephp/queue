@@ -43,19 +43,19 @@ final readonly class WorkerOptions
     public function __construct(
         public string $name = 'kode-worker',
         public array $queues = ['default'],
-        public float $sleep = 1.0,
-        public float $blockTimeout = 5.0,
-        public int $maxJobs = 0,
-        public int $maxTime = 0,
-        public int $memoryLimit = 128,
+        public private(set) float $sleep = 1.0,
+        public private(set) float $blockTimeout = 5.0,
+        public private(set) int $maxJobs = 0,
+        public private(set) int $maxTime = 0,
+        public private(set) int $memoryLimit = 128,
         public int $maxAttempts = 0,
         public ?BackoffStrategy $backoff = null,
         public int $backoffBase = 0,
-        public bool $stopWhenEmpty = false,
-        public bool $catchThrowable = true,
-        public int $restartSignal = 15, // SIGTERM
-        public float $reclaimEvery = 60.0,
-        public float $reclaimJitter = 0.0,
+        public private(set) bool $stopWhenEmpty = false,
+        public private(set) bool $catchThrowable = true,
+        public private(set) int $restartSignal = 15, // SIGTERM
+        public private(set) float $reclaimEvery = 60.0,
+        public private(set) float $reclaimJitter = 0.0,
         public array $nonRetryableExceptions = [UnsupportedFeatureException::class],
     ) {
     }

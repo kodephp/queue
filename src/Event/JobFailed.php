@@ -15,8 +15,8 @@ final readonly class JobFailed extends QueueEvent
     public function __construct(
         public ReservedJob $reserved,
         public Throwable $exception,
-        public string $worker,
-        public bool $willRetry = false,
+        public private(set) string $worker,
+        public private(set) bool $willRetry = false,
     ) {
         parent::__construct();
     }

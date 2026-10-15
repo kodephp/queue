@@ -10,7 +10,7 @@ namespace Kode\Queue\Event;
 final readonly class WorkerResumed extends QueueEvent
 {
     public function __construct(
-        public string $worker,
+        public private(set) string $worker,
         public ?string $reason = null,
     ) {
         parent::__construct();

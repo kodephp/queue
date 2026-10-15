@@ -30,14 +30,14 @@ final readonly class WorkerSummary implements JsonSerializable, Stringable
     public const string REASON_ERROR = 'error';
 
     public function __construct(
-        public string $worker,
+        public private(set) string $worker,
         public string $reason,
         public int $processed = 0,
         public int $failed = 0,
         public int $released = 0,
         public int $reclaimed = 0,
-        public float $uptimeSeconds = 0.0,
-        public int $peakMemoryBytes = 0,
+        public private(set) float $uptimeSeconds = 0.0,
+        public private(set) int $peakMemoryBytes = 0,
     ) {
     }
 

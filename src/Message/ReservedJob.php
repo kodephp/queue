@@ -28,10 +28,10 @@ final readonly class ReservedJob implements ArrayAccess, JsonSerializable, Strin
      * @param array<string, mixed> $meta       驱动私有元数据
      */
     public function __construct(
-        public Job $job,
-        public int|string $receipt,
-        public string $rawPayload = '',
-        public int $reservedAt = 0,
+        public private(set) Job $job,
+        public private(set) int|string $receipt,
+        public private(set) string $rawPayload = '',
+        public private(set) int $reservedAt = 0,
         public array $meta = [],
     ) {
     }

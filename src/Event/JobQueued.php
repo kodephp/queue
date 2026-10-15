@@ -12,7 +12,7 @@ use Kode\Queue\Message\Job;
 final readonly class JobQueued extends QueueEvent
 {
     public function __construct(
-        public Job $job,
+        public private(set) Job $job,
         public string $connection,
     ) {
         parent::__construct();

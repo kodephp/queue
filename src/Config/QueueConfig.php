@@ -23,7 +23,7 @@ final readonly class QueueConfig
      * @param string|null                     $failedStore 失败任务存储连接名
      */
     public function __construct(
-        public string $default,
+        public private(set) string $default,
         public array $connections,
         public ?string $failedStore = null,
     ) {

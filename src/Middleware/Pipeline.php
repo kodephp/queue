@@ -39,6 +39,8 @@ final class Pipeline
 
     /**
      * 追加中间件，返回新管道（原管道不变）。
+     *
+     * @return Pipeline<Operation|ReservedJob>
      */
     public function with(MiddlewareInterface|JobMiddlewareInterface ...$middleware): self
     {
@@ -48,7 +50,8 @@ final class Pipeline
     /**
      * 移除指定类型的中间件，返回新管道。
      *
-     * @param class-string ...$classes
+     * @param  class-string ...$classes
+     * @return Pipeline<Operation|ReservedJob>
      */
     public function without(string ...$classes): self
     {

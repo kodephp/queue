@@ -94,7 +94,7 @@ class RedisDriver extends AbstractDriver
             $ids[] = $job->id;
         }
 
-        if ($queue !== null && $argv !== []) {
+        if ($queue !== null) {
             $this->flush($queue, $argv);
         }
 

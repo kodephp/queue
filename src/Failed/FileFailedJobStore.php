@@ -220,7 +220,7 @@ final class FileFailedJobStore implements FailedJobStoreInterface
 
         $found = glob($this->directory . \DIRECTORY_SEPARATOR . '*', \GLOB_ONLYDIR);
 
-        return $found === false ? [] : array_values($found);
+        return $found === false ? [] : $found;
     }
 
     private function bucket(string $queue): string

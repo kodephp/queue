@@ -27,12 +27,12 @@ use Kode\Queue\Cron\CronExpression;
 final class Scheduler
 {
     /**
-     * @var list<array{cron: CronExpression, job: string|object, data: array<string, mixed>, queue: ?string}>
+     * @var list<array{CronExpression, string|object, array<string, mixed>, ?string}>
      */
     private array $crons = [];
 
     /**
-     * @var list<array{interval: int, job: string|object, data: array<string, mixed>, queue: ?string, last: ?int}>
+     * @var list<array{int, string|object, array<string, mixed>, ?string, ?int}>
      */
     private array $intervals = [];
 

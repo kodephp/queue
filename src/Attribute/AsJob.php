@@ -82,6 +82,6 @@ final readonly class AsJob
     {
         $class = \is_object($target) ? $target::class : $target;
 
-        return self::of($class)?->name ?? $class;
+        return self::of($class)->name ?? $class;
     }
 }

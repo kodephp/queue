@@ -74,8 +74,8 @@ final class LoggingMiddleware extends AbstractMiddleware
             'operation' => $operation->name,
             'connection' => $operation->connection,
             'queue' => $operation->queue,
-            'job_id' => $operation->job?->id ?? $operation->reserved?->job->id,
-            'job_name' => $operation->job?->name ?? $operation->reserved?->job->name,
+            'job_id' => $operation->job->id ?? $operation->reserved?->job->id,
+            'job_name' => $operation->job->name ?? $operation->reserved?->job->name,
             'trace_id' => $operation->job?->traceId(),
             'duration_ms' => round($elapsedMs, 3),
         ], static fn (mixed $v): bool => $v !== null);

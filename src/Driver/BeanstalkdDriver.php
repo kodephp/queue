@@ -337,7 +337,6 @@ class BeanstalkdDriver extends AbstractDriver
             return $name;
         }
 
-        /** @var class-string $class */
         $class = 'Pheanstalk\\Values\\TubeName';
 
         return new $class($name);
@@ -351,8 +350,8 @@ class BeanstalkdDriver extends AbstractDriver
             return $handle;
         }
 
-        // 跨进程确认时只剩下数字 ID，用值对象重建
-        foreach (['Pheanstalk\\Values\\JobId', 'Pheanstalk\\Job'] as $class) {
+        // 跨进程确认时只剩下数字 ID，用值对象重建（v5 在 Values\JobId，v4 在根命名空间）
+        foreach (['Pheanstalk\\Values\\JobId', 'Pheanstalk\\JobId'] as $class) {
             if (class_exists($class)) {
                 return new $class((int) $job->receipt);
             }

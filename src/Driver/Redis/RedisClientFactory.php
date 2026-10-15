@@ -78,7 +78,10 @@ final class RedisClientFactory
             : $redis->connect($host, $port, $timeout);
 
         if ($connected !== true) {
-            throw DriverException::connectionFailed(DriverType::Redis, sprintf('%s:%d 连接失败', $host, $port));
+            throw DriverException::connectionFailed(
+                DriverType::Redis,
+                new \RuntimeException(sprintf('%s:%d 连接失败', $host, $port)),
+            );
         }
 
         if (($password = $config->secret('password')) !== null) {

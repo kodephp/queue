@@ -36,7 +36,7 @@ final readonly class WorkerOptions
      * @param float           $reclaimJitter  回收时的随机抖动上限（秒），0 = 不抖动。
      *                                        多个 Worker 同时回收孤儿预留任务时，给每个进程加一点随机错峰，
      *                                        避免「惊群」把后端打成一个尖峰。仅对本地内存驱动无感（单进程）。
-     * @param list<class-string<Throwable>> $nonRetryableExceptions 这类异常一旦抛出就直接进死信，
+     * @param list<class-string<\Throwable>> $nonRetryableExceptions 这类异常一旦抛出就直接进死信，
      *                                        不再按 maxAttempts 重试。默认含 {@see UnsupportedFeatureException}：
      *                                        「这个驱动根本不支持该功能」重试一百次也不会忽然支持，纯属浪费。
      */

@@ -278,7 +278,7 @@ abstract class AbstractDriver implements DriverInterface
      */
     protected function normalize(Job $job, ?string $queue = null): Job
     {
-        $target = $queue ?? $job->queue ?? $this->config->queue;
+        $target = $queue ?? $job->queue;
 
         return $job->queue === $target ? $job : $job->withQueue($target);
     }

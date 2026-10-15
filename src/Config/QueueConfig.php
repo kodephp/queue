@@ -69,7 +69,7 @@ final readonly class QueueConfig
 
             // 只有「未设置」(getenv 返回 false) 与空串才回落默认值；
             // "0" 是合法配置（如端口、数据库序号），不能被 `?:` 吞掉。
-            return $value === false || $value === null || $value === '' ? $default : $value;
+            return $value === false || $value === '' ? $default : $value;
         };
 
         $driver = (string) $get('DRIVER', DriverType::DEFAULT->value);

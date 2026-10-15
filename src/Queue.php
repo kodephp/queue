@@ -40,6 +40,9 @@ use Override;
  */
 final class Queue implements QueueInterface
 {
+    /**
+     * @param Pipeline<Operation|ReservedJob> $pipeline
+     */
     public function __construct(
         private readonly DriverInterface $driver,
         private readonly string $connection = 'default',
@@ -419,6 +422,9 @@ final class Queue implements QueueInterface
         return $this->connection;
     }
 
+    /**
+     * @return Pipeline<Operation|ReservedJob>
+     */
     public function getPipeline(): Pipeline
     {
         return $this->pipeline;
@@ -462,14 +468,14 @@ final class Queue implements QueueInterface
         return Job::create(
             name: $this->resolveName($job),
             payload: $this->resolvePayload($job, $data),
-            queue: $queue ?? $attribute?->queue ?? $this->defaultQueue,
+            queue: $queue ?? $attribute->queue ?? $this->defaultQueue,
             delay: $delay,
             maxAttempts: $attribute?->maxAttempts,
-            priority: $attribute?->priority ?? $this->defaultPriority,
+            priority: $attribute->priority ?? $this->defaultPriority,
             timeout: $attribute?->timeout,
-            backoff: $attribute?->backoff ?? BackoffStrategy::ExponentialJitter,
-            backoffBase: $attribute?->backoffBase ?? 5,
-            headers: $attribute?->headers ?? [],
+            backoff: $attribute->backoff ?? BackoffStrategy::ExponentialJitter,
+            backoffBase: $attribute->backoffBase ?? 5,
+            headers: $attribute->headers ?? [],
         );
     }
 
@@ -477,7 +483,7 @@ final class Queue implements QueueInterface
     {
         return match (true) {
             $job instanceof Job => $job->name,
-            \is_string($job) => AsJob::of($job)?->name ?? $job,
+            \is_string($job) => AsJob::of($job)->name ?? $job,
             default => AsJob::nameOf($job),
         };
     }
@@ -509,7 +515,7 @@ final class Queue implements QueueInterface
 
     private function resolvePriority(string|object $job): Priority
     {
-        return AsJob::of($job)?->priority ?? $this->defaultPriority;
+        return AsJob::of($job)->priority ?? $this->defaultPriority;
     }
 
     /**
@@ -526,6 +532,9 @@ final class Queue implements QueueInterface
         );
     }
 
+    /**
+     * @param Pipeline<Operation|ReservedJob>|null $pipeline
+     */
     private function derive(
         ?string $queue = null,
         ?Pipeline $pipeline = null,

@@ -85,7 +85,7 @@ final class LuaScripts
      * KEYS[1]=ready KEYS[2]=delayed KEYS[3]=reserved
      * ARGV[1]=now ARGV[2]=可见性超时截止 ARGV[3]=搬运上限
      *
-     * @return array{0: string, 1: int}|false [预留后的负载, attempts 是否已由脚本自增]
+     * 脚本运行结果为 [预留后的负载, attempts 是否已由脚本自增] 或 false（无任务）。
      */
     public static function reserve(): string
     {
